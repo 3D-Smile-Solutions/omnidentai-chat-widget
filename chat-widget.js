@@ -1662,3 +1662,8 @@ window.testSupabase = async function() {
         console.error('Supabase test failed:', error);
     }
 };
+
+
+
+window.ChatWidget = ChatWidget;
+
