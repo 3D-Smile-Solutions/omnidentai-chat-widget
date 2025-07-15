@@ -1,7 +1,6 @@
 <!-- Load Supabase client -->
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"
 
-<script>
 class ChatWidget {
     constructor() {
         this.isOpen = false;
@@ -1663,4 +1662,3 @@ window.testSupabase = async function() {
         console.error('Supabase test failed:', error);
     }
 };
-</script>
