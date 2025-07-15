@@ -1,7 +1,3 @@
-<!-- Load Supabase client -->
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-
-    
 class ChatWidget {
     constructor() {
         this.isOpen = false;
