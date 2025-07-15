@@ -1504,11 +1504,13 @@ class ChatWidget {
 document.addEventListener('DOMContentLoaded', () => {
     window.chatWidget = new ChatWidget();
 });
-</script>
 
 
 
-<script>
+
+
+
+
 // Enhanced utility functions for testing
 window.resetChatData = function() {
     localStorage.removeItem('ghl_contact_id');
