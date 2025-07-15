@@ -1712,3 +1712,4 @@ window.checkHeartbeat = function() {
             this.addSpacebarFixToInput(phoneInput);
 
                    
+window.ChatWidget = ChatWidget;
