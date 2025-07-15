@@ -1,6 +1,8 @@
 <!-- Load Supabase client -->
-src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
+<script>
+    
 class ChatWidget {
     constructor() {
         this.isOpen = false;
@@ -16,7 +18,7 @@ class ChatWidget {
         this.currentSessionId = null;
         this.sessionStartTime = null;
         this.inactivityTimeout = null;
-        this.inactivityDuration = 1 * 60 * 1000; // 30 minutes
+        this.inactivityDuration = 10 * 60 * 1000; // 10 minutes
         this.sessionActive = false;
 
         // Message pagination
@@ -31,15 +33,17 @@ class ChatWidget {
         this.supabase = null;
         this.isSupabaseEnabled = false;
 
+        // Browser restart detection
+        this.lastHeartbeat = null;
+        this.heartbeatInterval = null;
+        this.heartbeatFrequency = 30000; // 30 seconds
+
         this.init();
     }
 
     async init() {
         // Initialize Supabase
         await this.initSupabase();
-
-        // Check for orphaned sessions on page load
-        await this.handleOrphanedSessions();
 
         this.chatButton = document.getElementById('chatButton');
         this.chatWindow = document.getElementById('chatWindow');
@@ -62,6 +66,9 @@ class ChatWidget {
 
         this.bindEvents();
         this.setupFormHandlers();
+        
+        // Initialize browser restart detection
+        this.initBrowserRestartDetection();
     }
 
     async initSupabase() {
@@ -81,33 +88,92 @@ class ChatWidget {
         }
     }
 
-    async handleOrphanedSessions() {
-        // Check if there was an active session that wasn't properly closed
-        const orphanedSessionId = sessionStorage.getItem('current_session_id');
+    // Browser Restart Detection Methods
+    initBrowserRestartDetection() {
+        // Check for previous session on page load
+        this.checkForBrowserRestart();
+        
+        // Set up heartbeat for current session
+        this.startHeartbeat();
+        
+        // Handle page unload to detect intentional closes vs crashes
+        window.addEventListener('beforeunload', () => {
+            this.handlePageUnload();
+        });
+    }
+
+    checkForBrowserRestart() {
+        const lastHeartbeat = localStorage.getItem('chat_last_heartbeat');
+        const currentSessionId = sessionStorage.getItem('current_session_id');
         const sessionActive = sessionStorage.getItem('session_active');
+        
+        if (lastHeartbeat && currentSessionId && sessionActive === 'true') {
+            const lastHeartbeatTime = new Date(lastHeartbeat);
+            const now = new Date();
+            const timeSinceLastHeartbeat = now - lastHeartbeatTime;
+            
+            // If more than 2 minutes since last heartbeat, assume browser was closed/crashed
+            if (timeSinceLastHeartbeat > 120000) { // 2 minutes
+                console.log('Browser restart detected - triggering metrics extraction');
+                this.handleBrowserRestart(currentSessionId, lastHeartbeatTime);
+            }
+        }
+        
+        // Clean up the heartbeat timestamp since we've checked it
+        localStorage.removeItem('chat_last_heartbeat');
+    }
+
+    async handleBrowserRestart(sessionId, lastHeartbeatTime) {
+        const contactId = localStorage.getItem('ghl_contact_id');
         const sessionStartTime = sessionStorage.getItem('session_start_time');
         
-        if (orphanedSessionId && sessionActive === 'true' && sessionStartTime) {
-            console.log('Found orphaned session on page load:', orphanedSessionId);
-            
-            // Calculate how long the session was active before the browser closed
-            const sessionEndTime = new Date().toISOString();
-            
-            // Trigger metrics extraction for the orphaned session
-            await this.triggerMetricsExtraction(
-                orphanedSessionId,
-                localStorage.getItem('ghl_contact_id'),
-                sessionStartTime,
-                sessionEndTime,
-                'browser_restart'
-            );
-            
-            // Clean up the orphaned session data
-            sessionStorage.removeItem('current_session_id');
-            sessionStorage.removeItem('session_start_time');
-            sessionStorage.removeItem('session_active');
-            
-            console.log('Orphaned session metrics sent and cleaned up');
+        if (!sessionId || !contactId) return;
+
+        // Trigger metrics extraction for the interrupted session
+        await this.triggerMetricsExtraction(
+            sessionId,
+            contactId,
+            sessionStartTime,
+            lastHeartbeatTime.toISOString(),
+            'browser_restart'
+        );
+
+        // Clear the old session data
+        sessionStorage.removeItem('current_session_id');
+        sessionStorage.removeItem('session_start_time');
+        sessionStorage.removeItem('session_active');
+        
+        console.log('Previous session metrics extracted due to browser restart');
+    }
+
+    startHeartbeat() {
+        // Clear any existing heartbeat
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+        }
+
+        // Start new heartbeat
+        this.heartbeatInterval = setInterval(() => {
+            this.updateHeartbeat();
+        }, this.heartbeatFrequency);
+
+        // Initial heartbeat
+        this.updateHeartbeat();
+    }
+
+    updateHeartbeat() {
+        const now = new Date().toISOString();
+        this.lastHeartbeat = now;
+        localStorage.setItem('chat_last_heartbeat', now);
+    }
+
+    handlePageUnload() {
+        // Clear heartbeat to indicate intentional close
+        localStorage.removeItem('chat_last_heartbeat');
+        
+        // Clear heartbeat interval
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
         }
     }
 
@@ -129,6 +195,7 @@ class ChatWidget {
 
         console.log('New session started:', this.currentSessionId);
         this.resetInactivityTimer();
+        this.startHeartbeat(); // Start heartbeat for new session
     }
 
     getCurrentSessionId() {
@@ -138,16 +205,14 @@ class ChatWidget {
         return this.currentSessionId;
     }
 
-    resetInactivityTimer(customDuration = null) {
+    resetInactivityTimer() {
         if (this.inactivityTimeout) {
             clearTimeout(this.inactivityTimeout);
         }
 
-        const duration = customDuration || this.inactivityDuration;
-
         this.inactivityTimeout = setTimeout(() => {
             this.handleSessionTimeout();
-        }, duration);
+        }, this.inactivityDuration);
     }
 
     async handleSessionTimeout() {
@@ -175,6 +240,12 @@ class ChatWidget {
             this.inactivityTimeout = null;
         }
 
+        // Clear heartbeat
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+            this.heartbeatInterval = null;
+        }
+
         // Trigger metrics extraction
         await this.triggerMetricsExtraction(
             this.currentSessionId,
@@ -188,6 +259,7 @@ class ChatWidget {
         sessionStorage.removeItem('current_session_id');
         sessionStorage.removeItem('session_start_time');
         sessionStorage.removeItem('session_active');
+        localStorage.removeItem('chat_last_heartbeat');
 
         this.currentSessionId = null;
         this.sessionStartTime = null;
@@ -534,7 +606,6 @@ class ChatWidget {
         }
     }
 
-    // Rest of your existing methods remain the same...
     bindEvents() {
         this.chatButton.addEventListener('click', () => this.toggleChat());
         this.closeBtn.addEventListener('click', () => this.closeChat());
@@ -572,48 +643,6 @@ class ChatWidget {
         document.addEventListener('click', (e) => {
             if (this.isOpen && !this.chatWindow.contains(e.target) && !this.chatButton.contains(e.target)) {
                 this.closeChat();
-            }
-        });
-
-        // Handle browser close/refresh for reliable metrics extraction
-        window.addEventListener('beforeunload', () => {
-            // Use sendBeacon for more reliable delivery on page unload
-            if (this.sessionActive && this.currentSessionId) {
-                const contactId = localStorage.getItem('ghl_contact_id');
-                if (contactId) {
-                    const payload = JSON.stringify({
-                        session_id: this.currentSessionId,
-                        contact_id: contactId,
-                        session_start_time: this.sessionStartTime,
-                        session_end_time: new Date().toISOString(),
-                        end_reason: 'browser_close',
-                        message_count: this.messages.length
-                    });
-                    
-                    // Use sendBeacon for better reliability on page unload
-                    if (navigator.sendBeacon) {
-                        navigator.sendBeacon(this.metricsWebhookUrl, payload);
-                    } else {
-                        // Fallback for older browsers
-                        fetch(this.metricsWebhookUrl, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: payload,
-                            keepalive: true
-                        }).catch(() => {}); // Ignore errors
-                    }
-                }
-            }
-        });
-
-        // Handle page visibility change (when user switches tabs)
-        document.addEventListener('visibilitychange', () => {
-            if (document.hidden && this.sessionActive) {
-                // User switched away from tab - start a shorter timeout
-                this.resetInactivityTimer(30000); // 30 seconds instead of 1 minute
-            } else if (!document.hidden && this.sessionActive) {
-                // User came back - reset to normal timeout
-                this.resetInactivityTimer();
             }
         });
     }
@@ -692,6 +721,7 @@ class ChatWidget {
 
                 // Reset inactivity timer for resumed session
                 this.resetInactivityTimer();
+                this.startHeartbeat();
             } else {
                 // No active session found, start new one
                 this.startNewSession();
@@ -728,123 +758,6 @@ class ChatWidget {
         }
         if (this.formLoading) {
             this.formLoading.style.display = 'none';
-        }
-
-        setTimeout(() => {
-            const nameInput = document.getElementById('userName');
-            const emailInput = document.getElementById('userEmail');
-            const phoneInput = document.getElementById('userPhone');
-
-            this.addSpacebarFixToInput(nameInput);
-            this.addSpacebarFixToInput(emailInput);
-            this.addSpacebarFixToInput(phoneInput);
-
-            if (nameInput) {
-                nameInput.focus();
-            }
-        }, 100);
-    }
-
-    showQuickVerification(userName) {
-        this.isOpen = true;
-        this.chatWindow.classList.add('active');
-        this.messagePrompt.classList.add('hidden');
-        this.formOverlay.classList.remove('hidden');
-
-        this.showQuickVerificationForm(userName);
-    }
-
-    showQuickVerificationForm(userName) {
-        const formContainer = this.formOverlay.querySelector('.form-container');
-        if (!formContainer) return;
-
-        formContainer.innerHTML = `
-            <div class="form-header">
-                <h3>Welcome back! 👋</h3>
-                <p>Continue as <strong>${userName}</strong>?</p>
-            </div>
-
-            <div class="verification-buttons">
-                <button type="button" class="verify-yes-btn" id="verifyYesBtn">
-                    Yes, that's me
-                </button>
-                <button type="button" class="verify-no-btn" id="verifyNoBtn">
-                    No, I'm someone else
-                </button>
-            </div>
-        `;
-
-        this.addVerificationStyles();
-
-        const verifyYesBtn = document.getElementById('verifyYesBtn');
-        const verifyNoBtn = document.getElementById('verifyNoBtn');
-
-        if (verifyYesBtn) {
-            verifyYesBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                this.openChatDirectly();
-            });
-        }
-
-        if (verifyNoBtn) {
-            verifyNoBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                this.clearChatHistory();
-                this.showFullFormFromVerification();
-            });
-        }
-    }
-
-    showFullFormFromVerification() {
-        const formContainer = this.formOverlay.querySelector('.form-container');
-        if (!formContainer) return;
-
-        formContainer.innerHTML = `
-            <div class="form-header">
-                <h3>Let's get started!</h3>
-                <p>Please provide your details to begin chatting</p>
-            </div>
-
-            <form class="chat-form" id="chatForm">
-                <div class="form-group">
-                    <label for="userName">Full Name *</label>
-                    <input type="text" id="userName" name="name" required placeholder="Enter your full name">
-                </div>
-
-                <div class="form-group">
-                    <label for="userEmail">Email Address *</label>
-                    <input type="email" id="userEmail" name="email" required placeholder="Enter your email">
-                </div>
-
-                <div class="form-group">
-                    <label for="userPhone">Phone Number</label>
-                    <input type="tel" id="userPhone" name="phone" placeholder="Enter your phone number">
-                </div>
-
-                <button type="submit" class="form-submit-btn" id="formSubmitBtn">
-                    Start Chat
-                </button>
-            </form>
-
-            <div class="form-loading" id="formLoading" style="display: none;">
-                <div class="loading-spinner"></div>
-                <p>Setting up your chat...</p>
-            </div>
-        `;
-
-        this.chatForm = document.getElementById('chatForm');
-        this.formLoading = document.getElementById('formLoading');
-        this.formSubmitBtn = document.getElementById('formSubmitBtn');
-
-        this.formOverlay.classList.remove('hidden');
-
-        if (this.chatForm) {
-            this.chatForm.addEventListener('submit', (e) => {
-                e.preventDefault();
-                this.handleFormSubmission();
-            });
         }
 
         setTimeout(() => {
@@ -1186,10 +1099,9 @@ class ChatWidget {
         this.isOpen = false;
         this.chatWindow.classList.remove('active');
 
-        // Trigger metrics extraction when chat is manually closed
-        if (this.sessionActive) {
-            await this.endCurrentSession('chat_closed');
-        }
+        // DON'T end session when chat is closed - only on inactivity timeout
+        // The session should continue running in the background
+        // Users can reopen and continue the same conversation
 
         const contactId = localStorage.getItem('ghl_contact_id');
         if (!contactId) {
@@ -1374,7 +1286,7 @@ class ChatWidget {
             messageEl.innerHTML = `
                 <div class="bot-avatar">
                     <svg viewBox="0 0 256 256">
-                        <path d="M224.32,114.24a56,56,0,0,0-60.07-76.57A56,56,0,0,0,67.93,51.44a56,56,0,0,0-36.25,90.32A56,56,0,0,0,69,217A56.39,56.39,0,0,0,83.59,219a55.75,55.75,0,0,0,8.17-.61a56,56,0,0,0,96.31-13.78,56,56,0,0,0,36.25-90.32ZM182.85,54.43a40,40,0,0,1,28.56,48c-.95-.63-1.91-1.24-2.91-1.81L164,74.88a8,8,0,0,0-8,0l-44,25.41V81.81l40.5-23.38A39.76,39.76,0,0,1,182.85,54.43ZM144,137.24l-16,9.24-16-9.24V118.76l16-9.24,16,9.24ZM80,72a40,40,0,0,1,67.53-29c-1,.51-2,1-3,1.62L100,70.27a8,8,0,0,0-4,6.92V128l-16-9.24ZM40.86,86.93A39.75,39.75,0,0,1,64.12,68.57C64.05,69.71,64,70.85,64,72v51.38a8,8,0,0,0,4,6.93l44,25.4L96,165,55.5,141.57A40,40,0,0,1,40.86,86.93ZM73.15,201.57a40,40,0,0,1-28.56-48c.95.63,1.91,1.24,2.91,1.81L92,181.12a8,8,0,0,0,8,0l44-25.41v18.48l-40.5,23.38A39.76,39.76,0,0,1,73.15,201.57ZM176,184a40,40,0,0,1-67.52,29.05c1-.51,2-1.05,3-1.63L156,185.73a8,8,0,0,0,4-6.92V128l16,9.24Zm39.14-14.93a39.75,39.75,0,0,1-23.26,18.36c.07-1.14.12-2.28.12-3.43V132.62a8,8,0,0,0-4-6.93l-44-25.4,16-9.24,40.5,23.38A40,40,0,0,1,215.14,169.07Z"/>
+                        <path d="M224.32,114.24a56,56,0,0,0-60.07-76.57A56,56,0,0,0,67.93,51.44a56,56,0,0,0-36.25,90.32A56,56,0,0,0,69,217A56.39,56.39,0,0,0,83.59,219a55.75,55.75,0,0,0,8.17-.61a56,56,0,0,0,96.31-13.78,56,56,0,0,0,36.25-90.32ZM182.85,54.43a40,40,0,0,1,28.56,48c-.95-.63-1.91-1.24-2.91-1.81L164,74.88a8,8,0,0,0-8,0l-44,25.41V81.81l40.5-23.38A39.76,39.76,0,0,1,182.85,54.43ZM144,137.24l-16,9.24-16-9.24V118.76l16-9.24,16,9.24ZM80,72a40,40,0,0,1,67.53-29c-1,.51-2,1-3,1.62L100,70.27a8,8,0,0,0-4,6.92V128l-16-9.24ZM40.86,86.93A39.75,39.75,0,0,1,64.12,68.57C64.05,69.71,64,70.85,64,72v51.38a8,8,0,0,0,4,6.93l44,25.4L96,165,55.5,141.57A40,40,0,0,1,40.86,86.93ZM73.15,201.57a40,40,0,0,1-28.56-48c.95.63,1.91,1.24,2.91,1.81L92,181.12a8,8,0,0,0,8,0l-44-25.41v18.48l-40.5,23.38A39.76,39.76,0,0,1,73.15,201.57ZM176,184a40,40,0,0,1-67.52,29.05c1-.51,2-1.05,3-1.63L156,185.73a8,8,0,0,0,4-6.92V128l16,9.24Zm39.14-14.93a39.75,39.75,0,0,1-23.26,18.36c.07-1.14.12-2.28.12-3.43V132.62a8,8,0,0,0-4-6.93l-44-25.4,16-9.24,40.5,23.38A40,40,0,0,1,215.14,169.07Z"/>
                     </svg>
                 </div>
                 <div class="message-content">
@@ -1504,12 +1416,6 @@ document.addEventListener('DOMContentLoaded', () => {
     window.chatWidget = new ChatWidget();
 });
 
-
-
-
-
-
-
 // Enhanced utility functions for testing
 window.resetChatData = function() {
     localStorage.removeItem('ghl_contact_id');
@@ -1521,6 +1427,7 @@ window.resetChatData = function() {
     sessionStorage.removeItem('current_session_id');
     sessionStorage.removeItem('session_start_time');
     sessionStorage.removeItem('session_active');
+    localStorage.removeItem('chat_last_heartbeat');
 
     const keysToRemove = [];
     for (let i = 0; i < localStorage.length; i++) {
@@ -1554,6 +1461,7 @@ window.checkChatData = function() {
     const userName = localStorage.getItem('user_name');
     const sessionActive = sessionStorage.getItem('chat_session_active');
     const currentSessionId = sessionStorage.getItem('current_session_id');
+    const lastHeartbeat = localStorage.getItem('chat_last_heartbeat');
 
     let messageCount = 0;
     let messages = [];
@@ -1575,10 +1483,11 @@ window.checkChatData = function() {
     console.log('User Name:', userName);
     console.log('Session Active:', sessionActive);
     console.log('Current Session ID:', currentSessionId);
+    console.log('Last Heartbeat:', lastHeartbeat);
     console.log('Stored Messages:', messageCount);
     console.log('Supabase Enabled:', window.chatWidget?.isSupabaseEnabled);
 
-    return { contactId, userName, sessionActive, currentSessionId, messageCount, messages };
+    return { contactId, userName, sessionActive, currentSessionId, lastHeartbeat, messageCount, messages };
 };
 
 window.viewChatHistory = function() {
@@ -1631,13 +1540,15 @@ window.getSessionInfo = function() {
     const sessionId = sessionStorage.getItem('current_session_id');
     const startTime = sessionStorage.getItem('session_start_time');
     const active = sessionStorage.getItem('session_active');
+    const lastHeartbeat = localStorage.getItem('chat_last_heartbeat');
 
     console.log('Session ID:', sessionId);
     console.log('Start Time:', startTime);
     console.log('Active:', active);
+    console.log('Last Heartbeat:', lastHeartbeat);
     console.log('Widget Session Active:', window.chatWidget?.sessionActive);
 
-    return { sessionId, startTime, active };
+    return { sessionId, startTime, active, lastHeartbeat };
 };
 
 // New Supabase testing function
@@ -1663,7 +1574,148 @@ window.testSupabase = async function() {
     }
 };
 
+// Browser restart testing function
+window.simulateBrowserRestart = function() {
+    // Simulate what happens during a browser restart
+    localStorage.setItem('chat_last_heartbeat', new Date(Date.now() - 300000).toISOString()); // 5 minutes ago
+    sessionStorage.setItem('current_session_id', 'test_session_12345');
+    sessionStorage.setItem('session_active', 'true');
+    sessionStorage.setItem('session_start_time', new Date(Date.now() - 600000).toISOString()); // 10 minutes ago
+    
+    console.log('Browser restart simulation set up. Refresh the page to trigger restart detection.');
+};
+
+window.checkHeartbeat = function() {
+    const lastHeartbeat = localStorage.getItem('chat_last_heartbeat');
+    if (lastHeartbeat) {
+        const heartbeatTime = new Date(lastHeartbeat);
+        const now = new Date();
+        const timeSince = now - heartbeatTime;
+        
+        console.log('Last Heartbeat:', heartbeatTime.toISOString());
+        console.log('Time Since Last Heartbeat:', Math.round(timeSince / 1000), 'seconds');
+        console.log('Heartbeat Active:', window.chatWidget?.heartbeatInterval !== null);
+    } else {
+        console.log('No heartbeat found');
+    }
+};
+</script>if (nameInput) {
+                nameInput.focus();
+            }
+        }, 100);
+    }
+
+    showQuickVerification(userName) {
+        this.isOpen = true;
+        this.chatWindow.classList.add('active');
+        this.messagePrompt.classList.add('hidden');
+        this.formOverlay.classList.remove('hidden');
+
+        this.showQuickVerificationForm(userName);
+    }
+
+    showQuickVerificationForm(userName) {
+        const formContainer = this.formOverlay.querySelector('.form-container');
+        if (!formContainer) return;
+
+        formContainer.innerHTML = `
+            <div class="form-header">
+                <h3>Welcome back! 👋</h3>
+                <p>Continue as <strong>${userName}</strong>?</p>
+            </div>
+
+            <div class="verification-buttons">
+                <button type="button" class="verify-yes-btn" id="verifyYesBtn">
+                    Yes, that's me
+                </button>
+                <button type="button" class="verify-no-btn" id="verifyNoBtn">
+                    No, I'm someone else
+                </button>
+            </div>
+        `;
+
+        this.addVerificationStyles();
+
+        const verifyYesBtn = document.getElementById('verifyYesBtn');
+        const verifyNoBtn = document.getElementById('verifyNoBtn');
+
+        if (verifyYesBtn) {
+            verifyYesBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.openChatDirectly();
+            });
+        }
+
+        if (verifyNoBtn) {
+            verifyNoBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.clearChatHistory();
+                this.showFullFormFromVerification();
+            });
+        }
+    }
+
+    showFullFormFromVerification() {
+        const formContainer = this.formOverlay.querySelector('.form-container');
+        if (!formContainer) return;
+
+        formContainer.innerHTML = `
+            <div class="form-header">
+                <h3>Let's get started!</h3>
+                <p>Please provide your details to begin chatting</p>
+            </div>
+
+            <form class="chat-form" id="chatForm">
+                <div class="form-group">
+                    <label for="userName">Full Name *</label>
+                    <input type="text" id="userName" name="name" required placeholder="Enter your full name">
+                </div>
+
+                <div class="form-group">
+                    <label for="userEmail">Email Address *</label>
+                    <input type="email" id="userEmail" name="email" required placeholder="Enter your email">
+                </div>
+
+                <div class="form-group">
+                    <label for="userPhone">Phone Number</label>
+                    <input type="tel" id="userPhone" name="phone" placeholder="Enter your phone number">
+                </div>
+
+                <button type="submit" class="form-submit-btn" id="formSubmitBtn">
+                    Start Chat
+                </button>
+            </form>
+
+            <div class="form-loading" id="formLoading" style="display: none;">
+                <div class="loading-spinner"></div>
+                <p>Setting up your chat...</p>
+            </div>
+        `;
+
+        this.chatForm = document.getElementById('chatForm');
+        this.formLoading = document.getElementById('formLoading');
+        this.formSubmitBtn = document.getElementById('formSubmitBtn');
+
+        this.formOverlay.classList.remove('hidden');
+
+        if (this.chatForm) {
+            this.chatForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.handleFormSubmission();
+            });
+        }
+
+        setTimeout(() => {
+            const nameInput = document.getElementById('userName');
+            const emailInput = document.getElementById('userEmail');
+            const phoneInput = document.getElementById('userPhone');
+
+            this.addSpacebarFixToInput(nameInput);
+            this.addSpacebarFixToInput(emailInput);
+            this.addSpacebarFixToInput(phoneInput);
 
 
-window.ChatWidget = ChatWidget;
-
+</script>
+                   
