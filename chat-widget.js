@@ -1593,8 +1593,7 @@ window.checkHeartbeat = function() {
     } else {
         console.log('No heartbeat found');
     }
-};
-    if (nameInput) {
+};if (nameInput) {
                 nameInput.focus();
             }
         }, 100);
@@ -1711,5 +1710,6 @@ window.checkHeartbeat = function() {
             this.addSpacebarFixToInput(emailInput);
             this.addSpacebarFixToInput(phoneInput);
 
-                   
+
+
 window.ChatWidget = ChatWidget;
