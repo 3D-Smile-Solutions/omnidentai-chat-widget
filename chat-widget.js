@@ -1594,7 +1594,7 @@ window.checkHeartbeat = function() {
         console.log('No heartbeat found');
     }
 };
-</script>if (nameInput) {
+    if (nameInput) {
                 nameInput.focus();
             }
         }, 100);
