@@ -13,7 +13,7 @@ class ChatWidget {
         this.currentSessionId = null;
         this.sessionStartTime = null;
         this.inactivityTimeout = null;
-        this.inactivityDuration = 1 * 60 * 1000; // 30 minutes
+        this.inactivityDuration = 0.5 * 60 * 1000; // 30 minutes
         this.sessionActive = false;
 
         // Message pagination
