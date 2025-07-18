@@ -35,8 +35,56 @@ class ChatWidget {
         this.resendTimer = null;
         this.resendCountdown = 60;
 
+        // Add sound properties
+       this.soundsEnabled = true;
+       this.isFirstLoad = true; // Add this flag
+
+
+
         this.init();
     }
+
+    // 2. Add this method to initialize sounds
+    // 2. Replace initSounds() with this simple version
+    initSounds() {
+    // Just enable sounds - we'll create audio context when needed
+    this.soundsEnabled = true;
+    console.log('Sounds enabled');
+}
+
+// 3. Replace playSound() with this complete working version
+    playSound(type) {
+    if (!this.soundsEnabled || this.isFirstLoad) return; // Skip if first load
+
+    try {
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+
+        if (type === 'send') {
+            // Very quiet send sound
+            oscillator.frequency.value = 1200;
+            gainNode.gain.setValueAtTime(0.20, audioContext.currentTime); // Much quieter
+            gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.05); // Shorter too
+            oscillator.start();
+            oscillator.stop(audioContext.currentTime + 0.05);
+        } else if (type === 'receive') {
+            // Very quiet, pleasant receive sound
+            oscillator.frequency.value = 800; // Lower frequency, less harsh
+            gainNode.gain.setValueAtTime(0.08, audioContext.currentTime); // Very quiet
+            gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.15); // Shorter duration
+            oscillator.start();
+            oscillator.stop(audioContext.currentTime + 0.15);
+        }
+
+    } catch (error) {
+        console.warn('Sound failed:', error);
+    }
+}
+
 
     async init() {
         // Initialize Supabase
@@ -380,7 +428,10 @@ class ChatWidget {
         } else {
             this.loadFromLocalStorage(contactId);
         }
+        // Enable sounds after first load is complete
+    this.isFirstLoad = false;
     }
+
 
     async loadFromSupabase(contactId) {
         const { data, error } = await this.supabase
@@ -486,32 +537,40 @@ class ChatWidget {
     }
 
     // Enhanced addMessage with Supabase integration and session tracking
-    async addMessage(content, sender) {
-        const timestamp = new Date().toISOString();
-        this.addMessageToDOM(content, sender, timestamp);
+    // 4. Update your addMessage method to include sounds
+async addMessage(content, sender) {
+    const timestamp = new Date().toISOString();
+    this.addMessageToDOM(content, sender, timestamp);
 
-        const message = {
-            content,
-            sender,
-            timestamp,
-            sessionId: this.getCurrentSessionId()
-        };
+    const message = {
+        content,
+        sender,
+        timestamp,
+        sessionId: this.getCurrentSessionId()
+    };
 
-        this.messages.push(message);
+    this.messages.push(message);
 
-        // Save to Supabase if enabled
-        if (this.isSupabaseEnabled) {
-            await this.saveMessageToSupabase(content, sender, timestamp);
-        }
-
-        // Always save to localStorage as backup
-        this.saveChatHistory();
-
-        // Reset inactivity timer on user messages
-        if (sender === 'user' && this.sessionActive) {
-            this.resetInactivityTimer();
-        }
+    // Play sound for user messages only here
+    if (sender === 'user') {
+        this.playSound('send');
     }
+    // Bot sounds are handled in addMessageToDOM for new messages only
+
+    // Save to Supabase if enabled
+    if (this.isSupabaseEnabled) {
+        await this.saveMessageToSupabase(content, sender, timestamp);
+    }
+
+    // Always save to localStorage as backup
+    this.saveChatHistory();
+
+    // Reset inactivity timer on user messages
+    if (sender === 'user' && this.sessionActive) {
+        this.resetInactivityTimer();
+    }
+}
+
 
     async addSystemMessage(content, showNewSessionButton = false) {
         const timestamp = new Date().toISOString();
@@ -694,6 +753,10 @@ async debugRLSContext() {
     const emailVerified = localStorage.getItem('email_verified');
     const verificationTimestamp = localStorage.getItem('verification_timestamp');
 
+      // Reset first load flag for sound every time chat opens
+        this.isFirstLoad = true;
+
+
     // Check if verification is recent (within 24 hours)
     const verificationAge = verificationTimestamp ? Date.now() - parseInt(verificationTimestamp) : Infinity;
     const maxAge = 12 * 60 * 60 * 1000; // 24 hours
@@ -712,6 +775,9 @@ async debugRLSContext() {
         this.chatWindow.classList.add('active');
         this.messagePrompt.classList.add('hidden');
         this.formOverlay.classList.add('hidden');
+
+        // Reset first load flag for sound when opening directly
+        this.isFirstLoad = true;
 
         sessionStorage.setItem('chat_session_active', 'true');
 
@@ -1897,6 +1963,8 @@ async testContextSetting() {
         }
     }
 
+
+
     async sendMessage() {
         const message = this.chatInput.value.trim();
         if (!message || this.isSending) return;
@@ -1927,17 +1995,22 @@ async testContextSetting() {
         }
     }
 
+    // 6. Update showMessagesSequentially to play sounds for bot responses
     async showMessagesSequentially(messages) {
-        for (let i = 0; i < messages.length; i++) {
-            if (i > 0) {
-                this.showTypingIndicator();
-                await new Promise(resolve => setTimeout(resolve, 800));
-                this.hideTypingIndicator();
-            }
+    for (let i = 0; i < messages.length; i++) {
+        if (i > 0) {
+            this.showTypingIndicator();
+            await new Promise(resolve => setTimeout(resolve, 800));
+            this.hideTypingIndicator();
+        }
 
-            await this.addMessage(messages[i], 'bot');
+        await this.addMessage(messages[i], 'bot');
+        // Small delay between multiple bot messages
+        if (i < messages.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 300));
         }
     }
+}
 
     async fetchBotResponse(userMessage) {
         const contactId = localStorage.getItem('ghl_contact_id');
@@ -2089,20 +2162,25 @@ async testContextSetting() {
             `;
         }
 
-        if (prepend) {
-            // Add to beginning (after load more button)
-            const firstMessage = this.chatMessages.querySelector('.message');
-            if (firstMessage) {
-                this.chatMessages.insertBefore(messageEl, firstMessage);
-            } else {
-                this.chatMessages.appendChild(messageEl);
-            }
+         if (prepend) {
+        // Historical messages - NO SOUND
+        const firstMessage = this.chatMessages.querySelector('.message');
+        if (firstMessage) {
+            this.chatMessages.insertBefore(messageEl, firstMessage);
         } else {
-            // Add to end (normal behavior)
             this.chatMessages.appendChild(messageEl);
-            this.scrollToBottom();
+        }
+    } else {
+        // New messages - PLAY SOUND
+        this.chatMessages.appendChild(messageEl);
+        this.scrollToBottom();
+
+        // Only play sound for NEW bot messages (not historical ones)
+        if (sender === 'bot') {
+            this.playSound('receive');
         }
     }
+}
 
     addSystemMessageToDOM(content, timestamp, showNewSessionButton = false) {
         if (!this.chatMessages) return;
