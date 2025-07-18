@@ -5,6 +5,7 @@ class ChatWidget {
         this.webhookUrl = 'https://n8n.3dsmilesolutions.ai/webhook/omnidentai';
         this.formWebhookUrl = 'https://n8n.3dsmilesolutions.ai/webhook/form-submit';
         this.metricsWebhookUrl = 'https://n8n.3dsmilesolutions.ai/webhook/extract-metrics';
+        this.codeVerificationUrl = 'https://n8n.3dsmilesolutions.ai/webhook/verify-code';
         this.isSending = false;
         this.maxStoredMessages = 100;
         this.messageExpiryDays = 30;
@@ -13,7 +14,7 @@ class ChatWidget {
         this.currentSessionId = null;
         this.sessionStartTime = null;
         this.inactivityTimeout = null;
-        this.inactivityDuration = 0.5 * 60 * 1000; // 30 minutes
+        this.inactivityDuration = 2 * 60 * 1000; // 30 minutes
         this.sessionActive = false;
 
         // Message pagination
@@ -27,6 +28,12 @@ class ChatWidget {
         this.supabaseKey = 'sb_publishable_QKwYCf7_uuRqSIzIopv91A_Y_kjKsho'; // Replace with your actual key
         this.supabase = null;
         this.isSupabaseEnabled = false;
+
+
+        // Add these new properties for resend timer
+        this.resendCooldown = false;
+        this.resendTimer = null;
+        this.resendCountdown = 60;
 
         this.init();
     }
@@ -91,7 +98,7 @@ class ChatWidget {
         sessionStorage.setItem('session_start_time', this.sessionStartTime);
         sessionStorage.setItem('session_active', 'true');
 
-        console.log('New session started:', this.currentSessionId);
+        // console.log('New session started:', this.currentSessionId);
         this.resetInactivityTimer();
     }
 
@@ -239,6 +246,9 @@ class ChatWidget {
             const contactId = localStorage.getItem('ghl_contact_id');
             if (!contactId) return;
 
+            // ADD THIS LINE - Set user context before querying
+            await this.setUserContext(contactId);
+
             // Calculate new offset
             const newOffset = this.messagesOffset + this.messageLimit;
 
@@ -305,10 +315,47 @@ class ChatWidget {
     }
 
     async setUserContext(contactId) {
-        // No RLS context needed - just log for debugging
-        console.log('User context set for contact:', contactId);
+    const email = localStorage.getItem('user_email');
+
+    if (!this.isSupabaseEnabled) {
+        console.log('Supabase not enabled');
         return true;
     }
+
+    if (!contactId || !email) {
+        console.error('Missing credentials for setUserContext:', { contactId, email });
+        return false;
+    }
+
+    try {
+        // console.log('Setting user context for:', contactId, email);
+
+        const { data, error } = await this.supabase.rpc('set_user_context', {
+            contact_id: contactId,
+            email: email
+        });
+
+        if (error) {
+            console.error('Failed to set user context:', error);
+            return false;
+        }
+
+        // console.log('User context set successfully, result:', data);
+
+        // Verify the context was set by immediately checking it
+        const verification = await this.debugRLSContext();
+        if (verification && (verification.current_contact_id === '' || verification.current_user_email === '')) {
+            console.error('Context verification failed - values are empty');
+            return false;
+        }
+
+        return true;
+    } catch (error) {
+        console.error('Error setting user context:', error);
+        return false;
+    }
+}
+
 
     // Enhanced message loading with pagination
     async loadChatHistory() {
@@ -368,7 +415,7 @@ class ChatWidget {
                 this.loadMoreContainer.style.display = 'block';
             }
 
-            console.log(`Loaded ${this.messages.length} recent messages from Supabase`);
+            // console.log(`Loaded ${this.messages.length} recent messages from Supabase`);
         } else {
             this.messages = [];
             console.log('No messages found in Supabase');
@@ -471,30 +518,95 @@ class ChatWidget {
         this.addSystemMessageToDOM(content, timestamp, showNewSessionButton);
     }
 
-    async saveMessageToSupabase(content, sender, timestamp) {
-        const contactId = localStorage.getItem('ghl_contact_id');
-        if (!contactId) return;
+    // Enhanced saveMessageToSupabase with RLS debugging
+async saveMessageToSupabase(content, sender, timestamp) {
+    const contactId = localStorage.getItem('ghl_contact_id');
+    const email = localStorage.getItem('user_email');
 
-        try {
-            const { error } = await this.supabase
-                .from('chat_messages')
-                .insert({
-                    contact_id: contactId,
-                    session_id: this.getCurrentSessionId(),
-                    message: content,
-                    sender: sender,
-                    created_at: timestamp
-                });
-
-            if (error) {
-                console.warn('Failed to save message to Supabase:', error);
-            } else {
-                console.log('Message saved to Supabase successfully');
-            }
-        } catch (error) {
-            console.warn('Error saving to Supabase:', error);
-        }
+    if (!contactId || !email) {
+        console.warn('Missing contact ID or email for message save');
+        return;
     }
+
+    try {
+        // console.log('Saving message:', { contactId, email, content: content.substring(0, 50) + '...', sender });
+
+        // Set context immediately before saving
+        // console.log('Setting context immediately before save...');
+        const contextSet = await this.setUserContext(contactId);
+        if (!contextSet) {
+            console.error('Failed to set context before message save');
+            return;
+        }
+
+        // Small delay to ensure context propagates
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        const { error } = await this.supabase
+            .from('chat_messages')
+            .insert({
+                contact_id: contactId,
+                user_email: email,
+                session_id: this.getCurrentSessionId(),
+                message: content,
+                sender: sender,
+                created_at: timestamp
+            });
+
+        if (error) {
+            console.warn('Failed to save message to Supabase:', error);
+
+            // Debug on failure
+            console.log('Debugging RLS failure...');
+            const debugInfo = await this.debugRLSContext();
+            console.log('RLS Debug Info:', debugInfo);
+
+            // Try to understand why it failed
+            console.log('Attempting direct validation...');
+            const { data: directValidation, error: validationError } = await this.supabase.rpc('validate_user_access', {
+                check_contact_id: contactId,
+                check_email: email
+            });
+            console.log('Direct validation result:', directValidation, 'error:', validationError);
+
+        } else {
+            // console.log('Message saved to Supabase successfully');
+        }
+    } catch (error) {
+        console.warn('Error saving to Supabase:', error);
+    }
+}
+
+
+// Add the missing debugRLSContext method
+async debugRLSContext() {
+    if (!this.isSupabaseEnabled) {
+        console.log('Supabase not enabled');
+        return null;
+    }
+
+    try {
+        const { data, error } = await this.supabase.rpc('debug_rls_context');
+
+        if (error) {
+            console.error('RLS debug error:', error);
+            return null;
+        }
+
+        // console.log('=== RLS CONTEXT ===');
+        // console.log('Contact ID:', data.current_contact_id);
+        // console.log('Email:', data.current_user_email);
+        // console.log('Message Count:', data.existing_message_count);
+        // console.log('Context Set:', data.context_set);
+        // console.log('Validation:', data.validation_result);
+        // console.log('==================');
+
+        return data;
+    } catch (error) {
+        console.error('Debug error:', error);
+        return null;
+    }
+}
 
     // Rest of your existing methods remain the same...
     bindEvents() {
@@ -576,19 +688,25 @@ class ChatWidget {
     }
 
     openChat() {
-        const contactId = localStorage.getItem('ghl_contact_id');
-        const userName = localStorage.getItem('user_name');
-        const sessionActive = sessionStorage.getItem('chat_session_active');
+    const contactId = localStorage.getItem('ghl_contact_id');
+    const userName = localStorage.getItem('user_name');
+    const sessionActive = sessionStorage.getItem('chat_session_active');
+    const emailVerified = localStorage.getItem('email_verified');
+    const verificationTimestamp = localStorage.getItem('verification_timestamp');
 
-        if (contactId && sessionActive) {
-            this.openChatDirectly();
-        } else if (contactId && !sessionActive) {
-            this.showQuickVerification(userName);
-        } else {
-            this.showFullForm();
-        }
+    // Check if verification is recent (within 24 hours)
+    const verificationAge = verificationTimestamp ? Date.now() - parseInt(verificationTimestamp) : Infinity;
+    const maxAge = 12 * 60 * 60 * 1000; // 24 hours
+
+    if (contactId && emailVerified && verificationAge < maxAge && sessionActive) {
+        this.openChatDirectly();
+    } else if (contactId && emailVerified && verificationAge < maxAge && !sessionActive) {
+        this.showQuickVerification(userName);
+    } else {
+        // Require verification
+        this.showFullForm();
     }
-
+}
     async openChatDirectly() {
         this.isOpen = true;
         this.chatWindow.classList.add('active');
@@ -674,48 +792,48 @@ class ChatWidget {
         this.showQuickVerificationForm(userName);
     }
 
-    showQuickVerificationForm(userName) {
-        const formContainer = this.formOverlay.querySelector('.form-container');
-        if (!formContainer) return;
+  showQuickVerificationForm(userName) {
+    const formContainer = this.formOverlay.querySelector('.form-container');
+    if (!formContainer) return;
 
-        formContainer.innerHTML = `
-            <div class="form-header">
-                <h3>Welcome back! 👋</h3>
-                <p>Continue as <strong>${userName}</strong>?</p>
-            </div>
+    formContainer.innerHTML = `
+        <div class="form-header">
+            <h3>Welcome back! 👋</h3>
+            <p>Continue as <strong>${userName}</strong>?</p>
+        </div>
 
-            <div class="verification-buttons">
-                <button type="button" class="verify-yes-btn" id="verifyYesBtn">
-                    Yes, that's me
-                </button>
-                <button type="button" class="verify-no-btn" id="verifyNoBtn">
-                    No, I'm someone else
-                </button>
-            </div>
-        `;
+        <div class="verification-buttons">
+            <button type="button" class="verify-yes-btn" id="verifyYesBtn">
+                Yes, that's me
+            </button>
+            <button type="button" class="verify-no-btn" id="verifyNoBtn">
+                No, I'm someone else
+            </button>
+        </div>
+    `;
 
-        this.addVerificationStyles();
+    this.addVerificationStyles();
 
-        const verifyYesBtn = document.getElementById('verifyYesBtn');
-        const verifyNoBtn = document.getElementById('verifyNoBtn');
+    const verifyYesBtn = document.getElementById('verifyYesBtn');
+    const verifyNoBtn = document.getElementById('verifyNoBtn');
 
-        if (verifyYesBtn) {
-            verifyYesBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                this.openChatDirectly();
-            });
-        }
-
-        if (verifyNoBtn) {
-            verifyNoBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                this.clearChatHistory();
-                this.showFullFormFromVerification();
-            });
-        }
+    if (verifyYesBtn) {
+        verifyYesBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this.openChatDirectly();
+        });
     }
+
+    if (verifyNoBtn) {
+        verifyNoBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this.clearChatHistory();
+            this.showFullFormFromVerification();
+        });
+    }
+}
 
     showFullFormFromVerification() {
         const formContainer = this.formOverlay.querySelector('.form-container');
@@ -782,106 +900,712 @@ class ChatWidget {
         }, 100);
     }
 
-    addVerificationStyles() {
-        if (document.querySelector('style[data-verification-styles]')) return;
+ // 10. Update your addVerificationStyles method to include success animation
+addVerificationStyles() {
+    if (document.querySelector('style[data-verification-form-styles]')) return;
 
-        const style = document.createElement('style');
-        style.setAttribute('data-verification-styles', 'true');
-        style.textContent = `
-            .verification-buttons {
-                display: flex;
-                flex-direction: column;
-                gap: 12px;
-                margin-top: 20px;
+    const style = document.createElement('style');
+    style.setAttribute('data-verification-form-styles', 'true');
+    style.textContent = `
+        /* Your existing styles... */
+        .verification-form {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            align-items: center;
+            width: 100%;
+        }
+
+        .verification-form .form-group {
+            width: 100%;
+            max-width: 320px;
+        }
+
+        .verification-form input[type="text"] {
+            width: 100%;
+            max-width: 320px;
+            text-align: center;
+            font-size: 28px;
+            font-weight: bold;
+            letter-spacing: 12px;
+            padding: 20px 25px;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            transition: all 0.2s ease;
+            box-sizing: border-box;
+            background: white;
+            color: #112359;
+        }
+
+        .verification-form input[type="text"]:focus {
+            border-color: #34d399;
+            box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.1);
+            outline: none;
+        }
+
+        .verification-form input[type="text"]::placeholder {
+            color: #d1d5db;
+            font-weight: normal;
+            letter-spacing: 8px;
+        }
+
+        .verification-note {
+            font-size: 14px;
+            color: #64748b;
+            margin: 5px 0 0 0;
+            text-align: center;
+        }
+
+        .form-secondary-btn {
+            background: transparent;
+            color: #64748b;
+            border: 2px solid #e2e8f0;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            width: 100%;
+            max-width: 320px;
+        }
+
+        .form-secondary-btn:hover:not(:disabled) {
+            border-color: #cbd5e1;
+            color: #475569;
+        }
+
+        .form-secondary-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .verification-loading {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+            padding: 30px;
+            text-align: center;
+        }
+
+        /* Add success animation */
+        @keyframes successSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @media (max-width: 480px) {
+            .verification-form input[type="text"] {
+                font-size: 24px;
+                letter-spacing: 8px;
+                padding: 16px 20px;
             }
 
-            .verify-yes-btn, .verify-no-btn {
-                padding: 14px 20px;
-                border: 2px solid;
-                border-radius: 8px;
-                font-size: 16px;
-                font-weight: 600;
-                cursor: pointer;
-                transition: all 0.2s ease;
+            .verification-form .form-group,
+            .form-secondary-btn {
+                max-width: 100%;
             }
 
-            .verify-yes-btn {
-                background: linear-gradient(135deg, #34d399 0%, #10b981 100%);
-                color: #112359;
-                border-color: #34d399;
+            .verification-form input[type="text"]::placeholder {
+                letter-spacing: 6px;
             }
+        }
+    `;
+    document.head.appendChild(style);
+}
+    // Simplified validation - let N8N handle the heavy lifting, then validate with Supabase
 
-            .verify-yes-btn:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 8px 25px rgba(52, 211, 153, 0.4);
-            }
+// Enhanced handleFormSubmission with detailed debugging
+async handleFormSubmission() {
+    const formData = new FormData(this.chatForm);
+    const userData = {
+    name: formData.get('name'),
+    email: formData.get('email'),
+    phone: formData.get('phone') || ''
+};
 
-            .verify-no-btn {
-                background: white;
-                color: #64748b;
-                border-color: #e2e8f0;
-            }
+    try {
+        // Use your existing form-submit webhook (which now sends verification email)
+        const response = await this.submitFormToN8n(userData);
 
-            .verify-no-btn:hover {
-                border-color: #cbd5e1;
-                color: #475569;
+        if (!response.success) {
+            this.showFormError(response.message || 'Email not found in our system.');
+            return;
+        }
+
+        // Check if it's a verification response
+        if (response.verification_sent) {
+            // Show verification form
+            this.showVerificationForm(userData.email, userData.name, userData.phone);
+        } else {
+            // Handle old response format (shouldn't happen with your updated workflow)
+            this.showFormError('Unexpected response format.');
+        }
+
+    } catch (error) {
+        console.error('Form submission error:', error);
+        this.showFormError('Network error. Please try again.');
+    }
+}
+
+// Send verification code
+async sendVerificationCode(email, name, phone) {
+    try {
+        // Use existing form-submit workflow
+        const response = await this.submitFormToN8n({
+            name: name,
+            email: email,
+            phone: phone
+        });
+
+        if (!response.success || !response.verification_sent) {
+            this.showFormError(response.message || 'Failed to send verification code.');
+            return;
+        }
+
+        // Show verification form
+        this.showVerificationForm(email, name, phone);
+
+    } catch (error) {
+        console.error('Error sending verification code:', error);
+        this.showFormError('Failed to send verification code. Please try again.');
+    }
+}
+
+// Show verification code form
+// Show verification code form
+// Show verification code form
+showVerificationForm(email, name, phone) {
+    const formContainer = this.formOverlay.querySelector('.form-container');
+    if (!formContainer) return;
+
+    formContainer.innerHTML = `
+        <div class="form-header">
+            <h3>Check Your Email 📧</h3>
+            <p>We sent a 6-digit code to <strong>${email}</strong></p>
+            <p class="verification-note">Enter the code to continue</p>
+        </div>
+
+        <form class="verification-form" id="verificationForm">
+            <div class="form-group">
+                <label for="verificationCode">Verification Code</label>
+                <input
+                    type="text"
+                    id="verificationCode"
+                    name="code"
+                    required
+                    placeholder="000000"
+                    maxlength="6"
+                    pattern="[0-9]{6}"
+                    autocomplete="one-time-code"
+                    >
+            </div>
+
+            <button type="submit" class="form-submit-btn" id="verifyCodeBtn">
+                Verify Code
+            </button>
+
+            <button type="button" class="form-secondary-btn" id="resendCodeBtn">
+                Resend Code
+            </button>
+        </form>
+
+        <div class="verification-loading" id="verificationLoading" style="display: none;">
+            <div class="loading-spinner"></div>
+            <p>Verifying code...</p>
+        </div>
+    `;
+
+    this.addVerificationStyles();
+    this.setupVerificationHandlers(email, name, phone);
+}
+// Setup verification form handlers
+// 2. Update your setupVerificationHandlers method
+setupVerificationHandlers(email, name, phone) {
+    const verificationForm = document.getElementById('verificationForm');
+    const resendBtn = document.getElementById('resendCodeBtn');
+    const codeInput = document.getElementById('verificationCode');
+
+    // Auto-format code input
+    if (codeInput) {
+        codeInput.addEventListener('input', (e) => {
+            // Only allow numbers
+            e.target.value = e.target.value.replace(/[^0-9]/g, '');
+
+            // Auto-submit when 6 digits entered
+            if (e.target.value.length === 6) {
+                setTimeout(() => {
+                    if (verificationForm) {
+                        verificationForm.dispatchEvent(new Event('submit'));
+                    }
+                }, 100);
             }
-        `;
-        document.head.appendChild(style);
+        });
+
+        codeInput.focus();
     }
 
-    async handleFormSubmission() {
-        if (!this.chatForm) return;
+    // Handle form submission
+    if (verificationForm) {
+        verificationForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            await this.verifyCode(email, codeInput.value.trim(), name);
+        });
+    }
 
-        const formData = new FormData(this.chatForm);
-        const userData = {
-            name: formData.get('name'),
-            email: formData.get('email'),
-            phone: formData.get('phone') || ''
+    // Handle resend with timer - UPDATED
+    if (resendBtn) {
+        resendBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            if (!this.resendCooldown) {
+                await this.handleResendCode(email, name, phone);
+            }
+        });
+    }
+}
+
+// 3. Add this new method for handling resend with timer
+async handleResendCode(email, name, phone) {
+    const resendBtn = document.getElementById('resendCodeBtn');
+    if (!resendBtn) return;
+
+    try {
+        // Start cooldown immediately
+        this.startResendCooldown();
+
+        // Send verification code
+        const response = await this.submitFormToN8n({
+            name: name,
+            email: email,
+            phone: phone
+        });
+
+        if (!response.success || !response.verification_sent) {
+            this.showVerificationError(response.message || 'Failed to send verification code.');
+            this.stopResendCooldown(); // Stop cooldown on error
+            return;
+        }
+
+        // Show success message briefly
+        this.showResendSuccess();
+
+    } catch (error) {
+        console.error('Error sending verification code:', error);
+        this.showVerificationError('Failed to send verification code. Please try again.');
+        this.stopResendCooldown(); // Stop cooldown on error
+    }
+}
+
+// 4. Add method to start the cooldown timer
+startResendCooldown() {
+    const resendBtn = document.getElementById('resendCodeBtn');
+    if (!resendBtn) return;
+
+    this.resendCooldown = true;
+    this.resendCountdown = 60;
+
+    // Create timer display element
+    this.createTimerDisplay();
+
+    // Disable button
+    resendBtn.disabled = true;
+    resendBtn.style.opacity = '0.5';
+    resendBtn.style.cursor = 'not-allowed';
+
+    // Start countdown
+    this.resendTimer = setInterval(() => {
+        this.resendCountdown--;
+        this.updateTimerDisplay();
+
+        if (this.resendCountdown <= 0) {
+            this.stopResendCooldown();
+        }
+    }, 1000);
+
+    // Update button text immediately
+    this.updateTimerDisplay();
+}
+
+// 5. Add method to stop the cooldown
+stopResendCooldown() {
+    const resendBtn = document.getElementById('resendCodeBtn');
+
+    this.resendCooldown = false;
+
+    if (this.resendTimer) {
+        clearInterval(this.resendTimer);
+        this.resendTimer = null;
+    }
+
+    // Re-enable button
+    if (resendBtn) {
+        resendBtn.disabled = false;
+        resendBtn.style.opacity = '1';
+        resendBtn.style.cursor = 'pointer';
+        resendBtn.textContent = 'Resend Code';
+    }
+
+    // Remove timer display
+    this.removeTimerDisplay();
+}
+
+// 6. Add method to create timer display
+createTimerDisplay() {
+    // Remove existing timer if any
+    this.removeTimerDisplay();
+
+    const resendBtn = document.getElementById('resendCodeBtn');
+    if (!resendBtn) return;
+
+    const timerDiv = document.createElement('div');
+    timerDiv.id = 'resendTimer';
+    timerDiv.style.cssText = `
+        font-size: 12px;
+        color: #64748b;
+        text-align: center;
+        margin-top: 8px;
+        font-weight: 500;
+    `;
+
+    // Insert after the resend button
+    resendBtn.parentNode.insertBefore(timerDiv, resendBtn.nextSibling);
+}
+
+// 7. Add method to update timer display
+updateTimerDisplay() {
+    const resendBtn = document.getElementById('resendCodeBtn');
+    const timerDiv = document.getElementById('resendTimer');
+
+    if (resendBtn) {
+        resendBtn.textContent = `Resend Code (${this.resendCountdown}s)`;
+    }
+
+    if (timerDiv) {
+        timerDiv.textContent = `You can request a new code in ${this.resendCountdown} seconds`;
+    }
+}
+
+// 8. Add method to remove timer display
+removeTimerDisplay() {
+    const timerDiv = document.getElementById('resendTimer');
+    if (timerDiv) {
+        timerDiv.remove();
+    }
+}
+
+// 9. Add method to show resend success message
+showResendSuccess() {
+    // Remove any existing success messages
+    const existingSuccess = document.querySelector('.resend-success-message');
+    if (existingSuccess) {
+        existingSuccess.remove();
+    }
+
+    const successDiv = document.createElement('div');
+    successDiv.className = 'resend-success-message';
+    successDiv.innerHTML = `
+        <div class="success-icon">✅</div>
+        <div class="success-text">New verification code sent!</div>
+    `;
+
+    // Add success styles
+    successDiv.style.cssText = `
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: #f0fdf4;
+        border: 1px solid #bbf7d0;
+        border-radius: 8px;
+        padding: 12px 16px;
+        margin: 0 auto 20px auto;
+        width: 100%;
+        max-width: 320px;
+        box-sizing: border-box;
+        color: #166534;
+        font-size: 14px;
+        font-weight: 500;
+        animation: successSlideIn 0.3s ease-out;
+    `;
+
+    // Find the form container and insert before verification form
+    const formContainer = this.formOverlay.querySelector('.form-container');
+    const verificationForm = document.getElementById('verificationForm');
+
+    if (formContainer && verificationForm) {
+        formContainer.insertBefore(successDiv, verificationForm);
+    }
+
+    // Auto-remove success message after 3 seconds
+    setTimeout(() => {
+        if (successDiv.parentNode) {
+            successDiv.remove();
+        }
+    }, 3000);
+}
+
+
+// Verify the entered code
+async verifyCode(email, enteredCode, name) {
+    const verificationForm = document.getElementById('verificationForm');
+    const verificationLoading = document.getElementById('verificationLoading');
+
+    if (enteredCode.length !== 6) {
+        this.showVerificationError('Please enter a 6-digit code.');
+        return;
+    }
+
+    // Show loading
+    if (verificationForm) verificationForm.style.display = 'none';
+    if (verificationLoading) verificationLoading.style.display = 'flex';
+
+    try {
+        const response = await fetch(this.codeVerificationUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                email: email,
+                code: enteredCode
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        if (!data.success) {
+            // Hide loading first
+            if (verificationLoading) verificationLoading.style.display = 'none';
+            if (verificationForm) verificationForm.style.display = 'flex';
+
+            // Show error message
+            this.showVerificationError(data.message || 'Invalid verification code. Please try again.');
+
+            // Clear and focus input
+            const codeInput = document.getElementById('verificationCode');
+            if (codeInput) {
+                codeInput.value = '';
+                codeInput.focus();
+            }
+            return;
+        }
+
+        // Verification successful - store data and proceed
+        localStorage.setItem('ghl_contact_id', data.contact_id);
+        localStorage.setItem('user_name', data.user_name);
+        localStorage.setItem('user_email', email);
+        localStorage.setItem('email_verified', 'true');
+        localStorage.setItem('verification_timestamp', Date.now().toString());
+
+        // Set user context
+        const authenticated = await this.setUserContext(data.contact_id);
+        if (!authenticated) {
+            this.showVerificationError('Authentication failed. Please try again.');
+            return;
+        }
+
+        // Open chat
+        const isExistingUser = !data.is_new;
+
+        if (isExistingUser) {
+            await this.openChatAfterForm(data.user_name, true);
+        } else {
+            this.clearChatHistory();
+            await this.openChatAfterForm(data.user_name, false);
+        }
+
+    } catch (error) {
+        console.error('Verification error:', error);
+        this.showVerificationError('Verification failed. Please try again.');
+        if (verificationForm) verificationForm.style.display = 'flex';
+        if (verificationLoading) verificationLoading.style.display = 'none';
+    }
+}
+
+// New method specifically for verification errors
+showVerificationError(message) {
+    // Remove any existing error messages
+    const existingError = document.querySelector('.form-error-message');
+    if (existingError) {
+        existingError.remove();
+    }
+
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'form-error-message';
+    errorDiv.innerHTML = `
+        <div class="error-icon">⚠️</div>
+        <div class="error-text">${message}</div>
+    `;
+
+    // Add error styles if not already present
+    this.addErrorStyles();
+
+    // Find the form container and insert error before the verification form
+    const formContainer = this.formOverlay.querySelector('.form-container');
+    const verificationForm = document.getElementById('verificationForm');
+
+    if (formContainer && verificationForm) {
+        formContainer.insertBefore(errorDiv, verificationForm);
+    }
+
+    // Auto-remove error after 8 seconds
+    setTimeout(() => {
+        if (errorDiv.parentNode) {
+            errorDiv.remove();
+        }
+    }, 8000);
+}
+
+// Add the missing testDatabaseAccess method (optional, for debugging)
+async testDatabaseAccess() {
+    if (!this.isSupabaseEnabled) return true;
+
+    try {
+        console.log('Testing database access...');
+
+        // Simple test - try to read messages
+        const { data, error, count } = await this.supabase
+            .from('chat_messages')
+            .select('id', { count: 'exact' })
+            .limit(1);
+
+        if (error) {
+            console.warn('Database access test failed:', error);
+            return false;
+        }
+
+        console.log(`Database access test passed. Total messages: ${count}`);
+        return true;
+    } catch (error) {
+        console.warn('Database access test error:', error);
+        return false;
+    }
+}
+
+// Add method to check what N8N is actually returning
+async debugN8nResponse(userData) {
+    console.log('=== N8N DEBUG ===');
+    console.log('Submitting to N8N:', userData);
+
+    try {
+        const response = await this.submitFormToN8n(userData);
+        console.log('Raw N8N response:', response);
+
+        // Parse the response to understand its structure
+        if (response.success) {
+            console.log('✅ N8N Success Response:');
+            console.log('  - Contact ID:', response.contact_id);
+            console.log('  - User Name:', response.user_name);
+            console.log('  - Status:', response.status);
+            console.log('  - User Data:', response.user_data);
+        } else {
+            console.log('❌ N8N Error Response:');
+            console.log('  - Message:', response.message);
+            console.log('  - Error Type:', response.error_type);
+        }
+
+        return response;
+    } catch (error) {
+        console.error('N8N submission error:', error);
+        return null;
+    }
+}
+
+// New validation method that checks contact_id + email combination
+async validateContactEmailCombo(contactId, email) {
+    if (!this.isSupabaseEnabled) {
+        return { valid: true, has_previous_messages: false, message: 'Supabase not enabled' };
+    }
+
+    try {
+        console.log('Validating contact+email combo:', contactId, email);
+
+        // Use the validation function
+        const { data: isValid, error } = await this.supabase.rpc('validate_user_access', {
+            check_contact_id: contactId,
+            check_email: email
+        });
+
+        if (error) {
+            console.warn('Validation error:', error);
+            return { valid: false, message: 'Validation failed' };
+        }
+
+        if (!isValid) {
+            return { valid: false, message: 'Access denied - email mismatch' };
+        }
+
+        // Check if user has existing messages
+        const { data: existingMessages, error: msgError } = await this.supabase
+            .from('chat_messages')
+            .select('id')
+            .eq('contact_id', contactId)
+            .limit(1);
+
+        const hasPreviousMessages = !msgError && existingMessages && existingMessages.length > 0;
+
+        return {
+            valid: true,
+            has_previous_messages: hasPreviousMessages,
+            message: 'Access granted'
         };
 
-        if (!userData.name || !userData.email) {
-            this.showFormError('Please fill in all required fields.');
-            return;
-        }
-
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(userData.email)) {
-            this.showFormError('Please enter a valid email address.');
-            return;
-        }
-
-        if (this.chatForm) {
-            this.chatForm.style.display = 'none';
-        }
-        if (this.formLoading) {
-            this.formLoading.style.display = 'flex';
-        }
-
-        try {
-            const response = await this.submitFormToN8n(userData);
-
-            if (response.success) {
-                localStorage.setItem('ghl_contact_id', response.contact_id);
-                localStorage.setItem('user_name', response.user_name || userData.name);
-                localStorage.setItem('user_email', userData.email);
-                if (userData.phone) {
-                    localStorage.setItem('user_phone', userData.phone);
-                }
-
-                if (response.status === 'existing') {
-                    await this.openChatAfterForm(response.user_data?.firstName || userData.name, true);
-                } else {
-                    this.clearChatHistory();
-                    await this.openChatAfterForm(userData.name, false);
-                }
-            } else {
-                this.showFormError(response.message, response.error_type);
-            }
-        } catch (error) {
-            this.showFormError('Network error. Please check your connection and try again.');
-        }
+    } catch (error) {
+        console.warn('Validation error:', error);
+        return { valid: false, message: 'Validation error' };
     }
+}
+// Enhanced debugging
+async debugContactEmailValidation() {
+    const contactId = localStorage.getItem('ghl_contact_id');
+    const email = localStorage.getItem('user_email');
+
+    console.log('=== CONTACT/EMAIL VALIDATION DEBUG ===');
+    console.log('Contact ID:', contactId);
+    console.log('Email:', email);
+
+    if (!contactId || !email) {
+        console.log('Missing data for validation');
+        return;
+    }
+
+    if (!this.isSupabaseEnabled) {
+        console.log('Supabase not enabled');
+        return;
+    }
+
+    try {
+        // Test the validation function
+        const validation = await this.validateContactEmailCombo(contactId, email);
+        console.log('Validation Result:', validation);
+
+        // Check what messages exist for this contact
+        const { data: allMessages, error } = await this.supabase
+            .from('chat_messages')
+            .select('contact_id, user_email, created_at')
+            .eq('contact_id', contactId);
+
+        if (!error && allMessages) {
+            console.log('All messages for this contact_id:', allMessages);
+        }
+
+        // Test RLS context
+        await this.debugRLSContext();
+
+    } catch (error) {
+        console.error('Debug error:', error);
+    }
+
+    console.log('=== END VALIDATION DEBUG ===');
+}
+
 
     showFormError(message, errorType = null) {
         if (this.formLoading) {
@@ -982,61 +1706,116 @@ class ChatWidget {
     }
 
     async submitFormToN8n(userData) {
-        const tempSessionId = sessionStorage.getItem('chat-session-id');
+    const tempSessionId = sessionStorage.getItem('chat-session-id');
 
-        const payload = {
-            name: userData.name,
-            email: userData.email,
-            phone: userData.phone,
-            source: 'chat_widget',
-            temp_session_id: tempSessionId,
-            timestamp: new Date().toISOString()
-        };
+    const payload = {
+        name: userData.name,
+        email: userData.email,
+        phone: userData.phone,
+        source: 'chat_widget',
+        temp_session_id: tempSessionId,
+        timestamp: new Date().toISOString()
+    };
 
-        const response = await fetch(this.formWebhookUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload)
-        });
+    const response = await fetch(this.formWebhookUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload)
+    });
 
-        if (!response.ok) {
-            throw new Error(`HTTP error: ${response.status}`);
-        }
-
-        const data = await response.json();
-
-        if (!data.contact_id) {
-            throw new Error('No contact_id received from server');
-        }
-
-        sessionStorage.setItem('chat-session-id', data.contact_id);
-        return data;
+    if (!response.ok) {
+        throw new Error(`HTTP error: ${response.status}`);
     }
+
+    const data = await response.json();
+
+    // REMOVE THIS CHECK - no longer needed for verification flow
+    // if (!data.contact_id) {
+    //     throw new Error('No contact_id received from server');
+    // }
+
+    // Update session storage if contact_id exists (for verification response)
+    if (data.contact_id) {
+        sessionStorage.setItem('chat-session-id', data.contact_id);
+    }
+
+    return data;
+}
 
     async openChatAfterForm(userName, isExistingUser = false) {
-        this.formOverlay.classList.add('hidden');
-        sessionStorage.setItem('chat_session_active', 'true');
+    this.formOverlay.classList.add('hidden');
+    sessionStorage.setItem('chat_session_active', 'true');
 
-        // For new users or after form submission, always start a fresh session
-        this.startNewSession();
-        console.log('Started new session after form submission');
+    // Start new session
+    this.startNewSession();
 
-        this.clearMessagesDisplay();
+    // Clear messages display
+    this.clearMessagesDisplay();
 
-        if (isExistingUser) {
-            await this.loadChatHistory();
+    // Set user context and verify it's working
+    const contactId = localStorage.getItem('ghl_contact_id');
+    const email = localStorage.getItem('user_email');
 
-            if (this.messages.length === 0) {
-                await this.addMessage(`Welcome back, ${userName}! 👋 Great to see you again. How can I help you today?`, 'bot');
-            }
-        } else {
-            await this.addMessage(`Hi ${userName}! 👋 Thanks for providing your details. How can I help you today?`, 'bot');
-        }
-
-        this.chatInput.focus();
+    const contextResult = await this.setUserContext(contactId);
+    if (!contextResult) {
+        this.showVerificationError('Authentication failed. Please try again.');
+        return;
     }
+
+    if (isExistingUser) {
+        // For existing users - load chat history
+        await this.loadChatHistory();
+
+        if (this.messages.length === 0) {
+            await this.addMessage(`Welcome back, ${userName}! 👋 Great to see you again. How can I help you today?`, 'bot');
+        }
+    } else {
+        // For new users - don't load history, just show welcome message
+        await this.addMessage(`Hi ${userName}! 👋 Thanks for providing your details. How can I help you today?`, 'bot');
+    }
+
+    this.chatInput.focus();
+}
+
+// Test function to manually test context setting
+async testContextSetting() {
+    const contactId = localStorage.getItem('ghl_contact_id');
+    const email = localStorage.getItem('user_email');
+
+    console.log('=== CONTEXT SETTING TEST ===');
+    console.log('Testing with:', contactId, email);
+
+    if (!contactId || !email) {
+        console.log('Missing credentials');
+        return;
+    }
+
+    try {
+        // Test setting context
+        const result = await this.setUserContext(contactId);
+        console.log('Context set result:', result);
+
+        // Test debugging
+        const debug = await this.debugRLSContext();
+        console.log('Debug result:', debug);
+
+        // Test validation directly
+        const { data: validation, error } = await this.supabase.rpc('validate_user_access', {
+            check_contact_id: contactId,
+            check_email: email
+        });
+        console.log('Direct validation:', validation, 'error:', error);
+
+    } catch (error) {
+        console.error('Test error:', error);
+    }
+
+    console.log('=== END CONTEXT TEST ===');
+}
+
+
 
     areMessagesExpired(timestamp) {
         if (!timestamp) return true;
@@ -1573,5 +2352,23 @@ window.testSupabase = async function() {
         }
     } catch (error) {
         console.error('Supabase test failed:', error);
+    }
+};
+
+// Global debug function
+window.debugRLS = async function() {
+    if (window.chatWidget) {
+        await window.chatWidget.debugRLSContext();
+    } else {
+        console.log('Chat widget not available');
+    }
+};
+
+// Global test function
+window.testContext = async function() {
+    if (window.chatWidget) {
+        await window.chatWidget.testContextSetting();
+    } else {
+        console.log('Chat widget not available');
     }
 };
