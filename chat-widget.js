@@ -609,6 +609,7 @@ async saveMessageToSupabase(content, sender, timestamp) {
                 session_id: this.getCurrentSessionId(),
                 message: content,
                 sender: sender,
+                channel: 'webchat', // Add this line
                 created_at: timestamp
             });
 
