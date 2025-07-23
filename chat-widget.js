@@ -2025,6 +2025,7 @@ async testContextSetting() {
             session_id: sessionId,
             name: userName,
             email: userEmail,
+            channel: 'webchat', // ADD THIS LINE
             timestamp: new Date().toISOString()
         };
 
