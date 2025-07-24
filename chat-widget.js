@@ -2288,3 +2288,179 @@ async testContextSetting() {
         }, 100);
     }
 }
+
+// Initialize chat widget when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+    window.chatWidget = new ChatWidget();
+});
+
+// Enhanced utility functions for testing
+window.resetChatData = function() {
+    localStorage.removeItem('ghl_contact_id');
+    localStorage.removeItem('user_name');
+    localStorage.removeItem('user_email');
+    localStorage.removeItem('user_phone');
+    sessionStorage.removeItem('chat_session_active');
+    sessionStorage.removeItem('chat-session-id');
+    sessionStorage.removeItem('current_session_id');
+    sessionStorage.removeItem('session_start_time');
+    sessionStorage.removeItem('session_active');
+
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('chat_messages_')) {
+            keysToRemove.push(key);
+        }
+    }
+    keysToRemove.forEach(key => localStorage.removeItem(key));
+
+    console.log('All chat data and message history reset. Refresh page to test as new user.');
+};
+
+window.clearChatHistory = function() {
+    const contactId = localStorage.getItem('ghl_contact_id');
+    if (contactId) {
+        const storageKey = `chat_messages_${contactId}`;
+        localStorage.removeItem(storageKey);
+        console.log('Chat history cleared for current user.');
+
+        if (window.chatWidget) {
+            window.chatWidget.clearMessages();
+        }
+    } else {
+        console.log('No active user found.');
+    }
+};
+
+window.checkChatData = function() {
+    const contactId = localStorage.getItem('ghl_contact_id');
+    const userName = localStorage.getItem('user_name');
+    const sessionActive = sessionStorage.getItem('chat_session_active');
+    const currentSessionId = sessionStorage.getItem('current_session_id');
+
+    let messageCount = 0;
+    let messages = [];
+    if (contactId) {
+        const storageKey = `chat_messages_${contactId}`;
+        const storedData = localStorage.getItem(storageKey);
+        if (storedData) {
+            try {
+                const parsedData = JSON.parse(storedData);
+                messageCount = parsedData.messages ? parsedData.messages.length : 0;
+                messages = parsedData.messages || [];
+            } catch (error) {
+                console.warn('Error parsing stored messages:', error);
+            }
+        }
+    }
+
+    console.log('Contact ID:', contactId);
+    console.log('User Name:', userName);
+    console.log('Session Active:', sessionActive);
+    console.log('Current Session ID:', currentSessionId);
+    console.log('Stored Messages:', messageCount);
+    console.log('Supabase Enabled:', window.chatWidget?.isSupabaseEnabled);
+
+    return { contactId, userName, sessionActive, currentSessionId, messageCount, messages };
+};
+
+window.viewChatHistory = function() {
+    const contactId = localStorage.getItem('ghl_contact_id');
+    if (!contactId) {
+        console.log('No active user found.');
+        return;
+    }
+
+    const storageKey = `chat_messages_${contactId}`;
+    const storedData = localStorage.getItem(storageKey);
+
+    if (storedData) {
+        try {
+            const parsedData = JSON.parse(storedData);
+            console.log('Chat History for Contact ID:', contactId);
+            console.log('Timestamp:', parsedData.timestamp);
+            console.log('Messages:');
+            parsedData.messages.forEach((msg, index) => {
+                console.log(`${index + 1}. [${msg.sender}] ${msg.content} (Session: ${msg.sessionId || 'N/A'})`);
+            });
+        } catch (error) {
+            console.error('Error parsing chat history:', error);
+        }
+    } else {
+        console.log('No chat history found for current user.');
+    }
+};
+
+// New session management testing functions
+window.endCurrentSession = async function() {
+    if (window.chatWidget && window.chatWidget.sessionActive) {
+        await window.chatWidget.endCurrentSession('manual_test');
+        console.log('Current session ended manually');
+    } else {
+        console.log('No active session to end');
+    }
+};
+
+window.startNewSession = function() {
+    if (window.chatWidget) {
+        window.chatWidget.startNewSession();
+        console.log('New session started manually');
+    } else {
+        console.log('Chat widget not available');
+    }
+};
+
+window.getSessionInfo = function() {
+    const sessionId = sessionStorage.getItem('current_session_id');
+    const startTime = sessionStorage.getItem('session_start_time');
+    const active = sessionStorage.getItem('session_active');
+
+    console.log('Session ID:', sessionId);
+    console.log('Start Time:', startTime);
+    console.log('Active:', active);
+    console.log('Widget Session Active:', window.chatWidget?.sessionActive);
+
+    return { sessionId, startTime, active };
+};
+
+// New Supabase testing function
+window.testSupabase = async function() {
+    if (!window.chatWidget?.isSupabaseEnabled) {
+        console.log('Supabase is not enabled. Configure your URL and API key first.');
+        return;
+    }
+
+    try {
+        const { data, error } = await window.chatWidget.supabase
+            .from('chat_messages')
+            .select('count')
+            .limit(1);
+
+        if (error) {
+            console.error('Supabase connection failed:', error);
+        } else {
+            console.log('✅ Supabase connection successful!');
+        }
+    } catch (error) {
+        console.error('Supabase test failed:', error);
+    }
+};
+
+// Global debug function
+window.debugRLS = async function() {
+    if (window.chatWidget) {
+        await window.chatWidget.debugRLSContext();
+    } else {
+        console.log('Chat widget not available');
+    }
+};
+
+// Global test function
+window.testContext = async function() {
+    if (window.chatWidget) {
+        await window.chatWidget.testContextSetting();
+    } else {
+        console.log('Chat widget not available');
+    }
+};
