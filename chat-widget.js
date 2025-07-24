@@ -168,17 +168,17 @@ class ChatWidget {
     }
 
     async handleSessionTimeout() {
-        if (!this.sessionActive) return;
+    if (!this.sessionActive) return;
 
-        console.log('Session timed out due to inactivity');
-        await this.endCurrentSession('inactivity_timeout');
+    console.log('Session timed out due to inactivity');
+    await this.endCurrentSession('inactivity_timeout');
 
-        // Show session ended message
-        await this.addSystemMessage(
-            '⏰ This conversation has ended due to inactivity',
-            true
-        );
-    }
+    // Show session ended message WITHOUT the button
+    await this.addSystemMessage(
+        '⏰ This conversation has ended due to inactivity. Send a message to start a new conversation.',
+        false // No button
+    );
+}
 
     async endCurrentSession(reason = 'manual') {
         if (!this.sessionActive || !this.currentSessionId) return;
@@ -588,10 +588,7 @@ async saveMessageToSupabase(content, sender, timestamp) {
     }
 
     try {
-        // console.log('Saving message:', { contactId, email, content: content.substring(0, 50) + '...', sender });
-
         // Set context immediately before saving
-        // console.log('Setting context immediately before save...');
         const contextSet = await this.setUserContext(contactId);
         if (!contextSet) {
             console.error('Failed to set context before message save');
@@ -609,26 +606,17 @@ async saveMessageToSupabase(content, sender, timestamp) {
                 session_id: this.getCurrentSessionId(),
                 message: content,
                 sender: sender,
-                channel: 'webchat', // Add this line
+                channel: 'webchat',
                 created_at: timestamp
             });
 
         if (error) {
             console.warn('Failed to save message to Supabase:', error);
 
-            // Debug on failure
-            console.log('Debugging RLS failure...');
+            // REMOVE THE OLD VALIDATION CALLS - they're causing 404 errors
+            // Just log the debug info
             const debugInfo = await this.debugRLSContext();
             console.log('RLS Debug Info:', debugInfo);
-
-            // Try to understand why it failed
-            console.log('Attempting direct validation...');
-            const { data: directValidation, error: validationError } = await this.supabase.rpc('validate_user_access', {
-                check_contact_id: contactId,
-                check_email: email
-            });
-            console.log('Direct validation result:', directValidation, 'error:', validationError);
-
         } else {
             // console.log('Message saved to Supabase successfully');
         }
@@ -793,7 +781,7 @@ async debugRLSContext() {
                 this.currentSessionId = existingSessionId;
                 this.sessionStartTime = sessionStorage.getItem('session_start_time');
                 this.sessionActive = true;
-                console.log('Resumed existing session:', this.currentSessionId);
+                // console.log('Resumed existing session:', this.currentSessionId);
 
                 // Reset inactivity timer for resumed session
                 this.resetInactivityTimer();
@@ -804,7 +792,7 @@ async debugRLSContext() {
             }
         } else {
             // Session is already active, just reset the inactivity timer
-            console.log('Continuing current session:', this.currentSessionId);
+            // console.log('Continuing current session:', this.currentSessionId);
             this.resetInactivityTimer();
         }
 
@@ -926,6 +914,12 @@ async debugRLSContext() {
                 <div class="form-group">
                     <label for="userPhone">Phone Number</label>
                     <input type="tel" id="userPhone" name="phone" placeholder="Enter your phone number">
+                </div>
+
+                <!-- ADD ZIP CODE HERE TOO -->
+                <div class="form-group">
+                    <label for="userZipCode">Zip Code</label>
+                    <input type="text" id="userZipCode" name="zipCode" placeholder="Enter your zip code" maxlength="10">
                 </div>
 
                 <button type="submit" class="form-submit-btn" id="formSubmitBtn">
@@ -1094,7 +1088,8 @@ async handleFormSubmission() {
     const userData = {
     name: formData.get('name'),
     email: formData.get('email'),
-    phone: formData.get('phone') || ''
+    phone: formData.get('phone') || '',
+    zipCode: formData.get('zipCode') || ''
 };
 
     try {
@@ -1146,9 +1141,9 @@ async sendVerificationCode(email, name, phone) {
 }
 
 // Show verification code form
-// Show verification code form
-// Show verification code form
-showVerificationForm(email, name, phone) {
+showVerificationForm(email, name, phone, zipCode) {
+        // Store zip code for later use
+    this.tempZipCode = zipCode;
     const formContainer = this.formOverlay.querySelector('.form-container');
     if (!formContainer) return;
 
@@ -1231,7 +1226,7 @@ setupVerificationHandlers(email, name, phone) {
         resendBtn.addEventListener('click', async (e) => {
             e.preventDefault();
             if (!this.resendCooldown) {
-                await this.handleResendCode(email, name, phone);
+                await this.handleResendCode(email, name, phone, this.tempZipCode);
             }
         });
     }
@@ -1250,7 +1245,8 @@ async handleResendCode(email, name, phone) {
         const response = await this.submitFormToN8n({
             name: name,
             email: email,
-            phone: phone
+            phone: phone,
+            zipCode: zipCode || '' // Include zip code
         });
 
         if (!response.success || !response.verification_sent) {
@@ -1779,6 +1775,7 @@ async debugContactEmailValidation() {
         name: userData.name,
         email: userData.email,
         phone: userData.phone,
+        zipCode: userData.zipCode || '', // Add zip code
         source: 'chat_widget',
         temp_session_id: tempSessionId,
         timestamp: new Date().toISOString()
@@ -1967,34 +1964,51 @@ async testContextSetting() {
 
 
     async sendMessage() {
-        const message = this.chatInput.value.trim();
-        if (!message || this.isSending) return;
+    const message = this.chatInput.value.trim();
+    if (!message || this.isSending) return;
 
-        this.isSending = true;
-        this.updateSendButton();
+    // Check if session is active, if not - restart automatically
+    if (!this.sessionActive) {
+        // Remove any existing session timeout messages
+        const systemMessages = document.querySelectorAll('.message.system');
+        systemMessages.forEach(msg => msg.remove());
 
-        await this.addMessage(message, 'user');
-        this.chatInput.value = '';
+        // Start new session automatically
+        this.startNewSession();
 
-        this.showTypingIndicator();
-
-        try {
-            const response = await this.fetchBotResponse(message);
-            this.hideTypingIndicator();
-
-            if (Array.isArray(response)) {
-                await this.showMessagesSequentially(response);
-            } else {
-                await this.addMessage(response, 'bot');
-            }
-        } catch (error) {
-            this.hideTypingIndicator();
-            await this.addMessage("I'm sorry, I'm having trouble responding right now. Please try again later.", 'bot');
-        } finally {
-            this.isSending = false;
-            this.updateSendButton();
-        }
+        // Add a quick "restarted" message
+        await this.addSystemMessage('🔄 New conversation started');
     }
+
+    this.isSending = true;
+    this.updateSendButton();
+
+    // Clear input IMMEDIATELY to fix delay
+    const messageToSend = message;
+    this.chatInput.value = '';
+    this.chatInput.style.height = 'auto'; // Reset height for textarea
+
+    await this.addMessage(messageToSend, 'user');
+
+    this.showTypingIndicator();
+
+    try {
+        const response = await this.fetchBotResponse(messageToSend);
+        this.hideTypingIndicator();
+
+        if (Array.isArray(response)) {
+            await this.showMessagesSequentially(response);
+        } else {
+            await this.addMessage(response, 'bot');
+        }
+    } catch (error) {
+        this.hideTypingIndicator();
+        await this.addMessage("I'm sorry, I'm having trouble responding right now. Please try again later.", 'bot');
+    } finally {
+        this.isSending = false;
+        this.updateSendButton();
+    }
+}
 
     // 6. Update showMessagesSequentially to play sounds for bot responses
     async showMessagesSequentially(messages) {
@@ -2184,51 +2198,49 @@ async testContextSetting() {
     }
 }
 
-    addSystemMessageToDOM(content, timestamp, showNewSessionButton = false) {
-        if (!this.chatMessages) return;
+   addSystemMessageToDOM(content, timestamp, showNewSessionButton = false) {
+    if (!this.chatMessages) return;
 
-        const messageEl = document.createElement('div');
-        messageEl.className = 'message system';
+    const messageEl = document.createElement('div');
+    messageEl.className = 'message system session-timeout-message'; // Add class for easy removal
 
-        const timeStr = this.formatTimestamp(timestamp);
+    const timeStr = this.formatTimestamp(timestamp);
 
-        let buttonHtml = '';
-        if (showNewSessionButton) {
-            buttonHtml = `
-                <button class="start-new-session-btn" onclick="window.chatWidget.startNewSessionFromButton()">
-                    Start New Conversation
-                </button>
-            `;
-        }
+     let buttonHtml = '';
+    // if (showNewSessionButton) {
+    //     buttonHtml = `
+    //         <button class="start-new-session-btn" onclick="window.chatWidget.startNewSessionFromButton()">
+    //             Start New Conversation
+    //         </button>
+    //     `;
+    // }
 
-        messageEl.innerHTML = `
-            <div class="message-content">
-                ${content}
-                <div class="message-timestamp">${timeStr}</div>
-                ${buttonHtml}
-            </div>
-        `;
+    messageEl.innerHTML = `
+        <div class="message-content">
+            ${content}
+            <div class="message-timestamp">${timeStr}</div>
+            ${buttonHtml}
+        </div>
+    `;
 
-        this.chatMessages.appendChild(messageEl);
-        this.scrollToBottom();
-    }
+    this.chatMessages.appendChild(messageEl);
+    this.scrollToBottom();
+}
 
-    async startNewSessionFromButton() {
-        // End current session if active
-        if (this.sessionActive) {
-            await this.endCurrentSession('manual_restart');
-        }
-
-        // Start new session
-        this.startNewSession();
-
-        // Add welcome message for new session
-        const userName = localStorage.getItem('user_name') || 'there';
-        await this.addMessage(`Hi ${userName}! 👋 I'm ready to help you with a fresh conversation. What can I assist you with?`, 'bot');
-
-        // Focus input
-        this.chatInput.focus();
-    }
+//     async startNewSessionFromButton() {
+//     // Remove any existing session timeout messages (same as sendMessage does)
+//     const systemMessages = document.querySelectorAll('.message.system');
+//     systemMessages.forEach(msg => msg.remove());
+//
+//     // Start new session automatically (same as sendMessage does)
+//     this.startNewSession();
+//
+//     // Add the same "restarted" message that sendMessage shows
+//     await this.addSystemMessage('🔄 New conversation started');
+//
+//     // Focus input for user to start typing
+//     this.chatInput.focus();
+// }
 
     showTypingIndicator() {
         const existingIndicator = document.getElementById('typingIndicator');
@@ -2276,179 +2288,3 @@ async testContextSetting() {
         }, 100);
     }
 }
-
-// Initialize chat widget when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-    window.chatWidget = new ChatWidget();
-});
-
-// Enhanced utility functions for testing
-window.resetChatData = function() {
-    localStorage.removeItem('ghl_contact_id');
-    localStorage.removeItem('user_name');
-    localStorage.removeItem('user_email');
-    localStorage.removeItem('user_phone');
-    sessionStorage.removeItem('chat_session_active');
-    sessionStorage.removeItem('chat-session-id');
-    sessionStorage.removeItem('current_session_id');
-    sessionStorage.removeItem('session_start_time');
-    sessionStorage.removeItem('session_active');
-
-    const keysToRemove = [];
-    for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith('chat_messages_')) {
-            keysToRemove.push(key);
-        }
-    }
-    keysToRemove.forEach(key => localStorage.removeItem(key));
-
-    console.log('All chat data and message history reset. Refresh page to test as new user.');
-};
-
-window.clearChatHistory = function() {
-    const contactId = localStorage.getItem('ghl_contact_id');
-    if (contactId) {
-        const storageKey = `chat_messages_${contactId}`;
-        localStorage.removeItem(storageKey);
-        console.log('Chat history cleared for current user.');
-
-        if (window.chatWidget) {
-            window.chatWidget.clearMessages();
-        }
-    } else {
-        console.log('No active user found.');
-    }
-};
-
-window.checkChatData = function() {
-    const contactId = localStorage.getItem('ghl_contact_id');
-    const userName = localStorage.getItem('user_name');
-    const sessionActive = sessionStorage.getItem('chat_session_active');
-    const currentSessionId = sessionStorage.getItem('current_session_id');
-
-    let messageCount = 0;
-    let messages = [];
-    if (contactId) {
-        const storageKey = `chat_messages_${contactId}`;
-        const storedData = localStorage.getItem(storageKey);
-        if (storedData) {
-            try {
-                const parsedData = JSON.parse(storedData);
-                messageCount = parsedData.messages ? parsedData.messages.length : 0;
-                messages = parsedData.messages || [];
-            } catch (error) {
-                console.warn('Error parsing stored messages:', error);
-            }
-        }
-    }
-
-    console.log('Contact ID:', contactId);
-    console.log('User Name:', userName);
-    console.log('Session Active:', sessionActive);
-    console.log('Current Session ID:', currentSessionId);
-    console.log('Stored Messages:', messageCount);
-    console.log('Supabase Enabled:', window.chatWidget?.isSupabaseEnabled);
-
-    return { contactId, userName, sessionActive, currentSessionId, messageCount, messages };
-};
-
-window.viewChatHistory = function() {
-    const contactId = localStorage.getItem('ghl_contact_id');
-    if (!contactId) {
-        console.log('No active user found.');
-        return;
-    }
-
-    const storageKey = `chat_messages_${contactId}`;
-    const storedData = localStorage.getItem(storageKey);
-
-    if (storedData) {
-        try {
-            const parsedData = JSON.parse(storedData);
-            console.log('Chat History for Contact ID:', contactId);
-            console.log('Timestamp:', parsedData.timestamp);
-            console.log('Messages:');
-            parsedData.messages.forEach((msg, index) => {
-                console.log(`${index + 1}. [${msg.sender}] ${msg.content} (Session: ${msg.sessionId || 'N/A'})`);
-            });
-        } catch (error) {
-            console.error('Error parsing chat history:', error);
-        }
-    } else {
-        console.log('No chat history found for current user.');
-    }
-};
-
-// New session management testing functions
-window.endCurrentSession = async function() {
-    if (window.chatWidget && window.chatWidget.sessionActive) {
-        await window.chatWidget.endCurrentSession('manual_test');
-        console.log('Current session ended manually');
-    } else {
-        console.log('No active session to end');
-    }
-};
-
-window.startNewSession = function() {
-    if (window.chatWidget) {
-        window.chatWidget.startNewSession();
-        console.log('New session started manually');
-    } else {
-        console.log('Chat widget not available');
-    }
-};
-
-window.getSessionInfo = function() {
-    const sessionId = sessionStorage.getItem('current_session_id');
-    const startTime = sessionStorage.getItem('session_start_time');
-    const active = sessionStorage.getItem('session_active');
-
-    console.log('Session ID:', sessionId);
-    console.log('Start Time:', startTime);
-    console.log('Active:', active);
-    console.log('Widget Session Active:', window.chatWidget?.sessionActive);
-
-    return { sessionId, startTime, active };
-};
-
-// New Supabase testing function
-window.testSupabase = async function() {
-    if (!window.chatWidget?.isSupabaseEnabled) {
-        console.log('Supabase is not enabled. Configure your URL and API key first.');
-        return;
-    }
-
-    try {
-        const { data, error } = await window.chatWidget.supabase
-            .from('chat_messages')
-            .select('count')
-            .limit(1);
-
-        if (error) {
-            console.error('Supabase connection failed:', error);
-        } else {
-            console.log('✅ Supabase connection successful!');
-        }
-    } catch (error) {
-        console.error('Supabase test failed:', error);
-    }
-};
-
-// Global debug function
-window.debugRLS = async function() {
-    if (window.chatWidget) {
-        await window.chatWidget.debugRLSContext();
-    } else {
-        console.log('Chat widget not available');
-    }
-};
-
-// Global test function
-window.testContext = async function() {
-    if (window.chatWidget) {
-        await window.chatWidget.testContextSetting();
-    } else {
-        console.log('Chat widget not available');
-    }
-};
