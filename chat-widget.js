@@ -1005,7 +1005,7 @@ async debugRLSContext() {
 
         formContainer.innerHTML = `
         <div class="form-logo-top">
-            <img src="assets/OmniDent%20AI%20Logo.svg" alt="Company Logo" class="logo-image-top">
+            <img src="https://cdn.jsdelivr.net/gh/3dsmilesolutions/omnidentai-chat-widget@main/assets/OmniDent%20AI%20Logo.svg" alt="Company Logo" class="logo-image-top">
         </div>
 
         <div class="form-header">
