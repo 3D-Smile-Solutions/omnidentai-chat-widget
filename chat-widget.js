@@ -85,6 +85,110 @@ class ChatWidget {
     }
 }
 
+// Add this helper method to get the marketing consent value
+getMarketingConsent() {
+    const consentCheckbox = document.querySelector('input[name="marketingConsent"]');
+    return consentCheckbox ? consentCheckbox.checked : false;
+}
+
+// Add these functions to your existing JavaScript
+showConsentError() {
+    document.getElementById('consentError').style.display = 'block';
+}
+
+hideConsentError() {
+    if (document.getElementById('marketingConsent').checked) {
+        document.getElementById('consentError').style.display = 'none';
+    }
+}
+
+async saveUserProfile(userData) {
+    if (!this.isSupabaseEnabled) {
+        console.log('Supabase not enabled, skipping profile save');
+        return false;
+    }
+
+    const contactId = localStorage.getItem('ghl_contact_id');
+    if (!contactId) {
+        console.warn('No contact ID available for profile save');
+        return false;
+    }
+
+    try {
+        // Set user context first
+        await this.setUserContext(contactId);
+
+        const profileData = {
+            contact_id: contactId,
+            email: userData.email,
+            first_name: userData.name?.split(' ')[0] || '',
+            last_name: userData.name?.split(' ').slice(1).join(' ') || '',
+            phone: userData.phone || '',
+            zip_code: userData.zipCode || '',
+            gender: userData.gender || '',
+            age: userData.age ? parseInt(userData.age) : null,
+            marketing_consent: userData.marketingConsent || false,
+            updated_at: new Date().toISOString()
+        };
+
+        // Use upsert to insert or update
+        const { data, error } = await this.supabase
+            .from('user_profiles')
+            .upsert(profileData, {
+                onConflict: 'contact_id',
+                ignoreDuplicates: false
+            })
+            .select();
+
+        if (error) {
+            console.error('Error saving user profile:', error);
+            return false;
+        }
+
+        // console.log('User profile saved successfully:', data);
+        return true;
+    } catch (error) {
+        console.error('Error in saveUserProfile:', error);
+        return false;
+    }
+}
+
+async loadUserProfile() {
+    if (!this.isSupabaseEnabled) {
+        console.log('Supabase not enabled, skipping profile load');
+        return null;
+    }
+
+    const contactId = localStorage.getItem('ghl_contact_id');
+    if (!contactId) {
+        console.warn('No contact ID available for profile load');
+        return null;
+    }
+
+    try {
+        // Set user context first
+        await this.setUserContext(contactId);
+
+        const { data, error } = await this.supabase
+            .from('user_profiles')
+            .select('*')
+            .eq('contact_id', contactId)
+            .single();
+
+        if (error) {
+            if (error.code !== 'PGRST116') { // Not found error
+                console.error('Error loading user profile:', error);
+            }
+            return null;
+        }
+
+        // console.log('User profile loaded successfully:', data);
+        return data;
+    } catch (error) {
+        console.error('Error in loadUserProfile:', error);
+        return null;
+    }
+}
 
     async init() {
         // Initialize Supabase
@@ -99,7 +203,7 @@ class ChatWidget {
         this.messagePrompt = document.getElementById('messagePrompt');
 
         // Form elements
-        this.formOverlay = document.getElementById('chatFormOverlay');
+        this.formOverlay = document.getElementById('chatFormOverlay'); // This should be the overlay div
         this.chatForm = document.getElementById('chatForm');
         this.formLoading = document.getElementById('formLoading');
         this.formSubmitBtn = document.getElementById('formSubmitBtn');
@@ -119,7 +223,7 @@ class ChatWidget {
             if (this.supabaseUrl !== 'YOUR_SUPABASE_URL' && this.supabaseKey !== 'YOUR_SUPABASE_ANON_KEY') {
                 this.supabase = window.supabase.createClient(this.supabaseUrl, this.supabaseKey);
                 this.isSupabaseEnabled = true;
-                console.log('Supabase initialized successfully');
+                // console.log('Supabase initialized successfully');
             } else {
                 console.log('Supabase not configured - using localStorage fallback');
                 this.isSupabaseEnabled = false;
@@ -714,13 +818,14 @@ async debugRLSContext() {
     }
 
     setupFormHandlers() {
-        if (this.chatForm) {
-            this.chatForm.addEventListener('submit', (e) => {
-                e.preventDefault();
-                this.handleFormSubmission();
-            });
-        }
+    if (this.chatForm) {
+        this.chatForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.handleFormSubmission();
+        });
     }
+}
+
 
     updateSendButton() {
         const hasText = this.chatInput.value.trim().length > 0;
@@ -763,7 +868,11 @@ async debugRLSContext() {
         this.isOpen = true;
         this.chatWindow.classList.add('active');
         this.messagePrompt.classList.add('hidden');
-        this.formOverlay.classList.add('hidden');
+        // PROPERLY hide the form overlay
+        if (this.formOverlay) {
+            this.formOverlay.classList.add('hidden');
+            this.formOverlay.style.display = 'none';
+        }
 
         // Reset first load flag for sound when opening directly
         this.isFirstLoad = true;
@@ -895,49 +1004,82 @@ async debugRLSContext() {
         if (!formContainer) return;
 
         formContainer.innerHTML = `
-            <div class="form-header">
-                <h3>Let's get started!</h3>
-                <p>Please provide your details to begin chatting</p>
-            </div>
+        <div class="form-logo-top">
+            <img src="assets/OmniDent%20AI%20Logo.svg" alt="Company Logo" class="logo-image-top">
+        </div>
 
-            <form class="chat-form" id="chatForm">
-                <div class="form-group">
+        <div class="form-header">
+            <h3>Let's get started!</h3>
+            <p>Please provide your details to begin chatting</p>
+        </div>
+
+        <form class="chat-form" id="chatForm">
+            <div class="form-row">
+                <div class="form-group half-width">
                     <label for="userName">Full Name *</label>
-                    <input type="text" id="userName" name="name" required placeholder="Enter your full name">
+                    <input type="text" id="userName" name="name" required placeholder="Enter your full name" oninvalid="this.setCustomValidity('Please enter your full name')" oninput="this.setCustomValidity('')">
                 </div>
-
-                <div class="form-group">
+                <div class="form-group half-width">
                     <label for="userEmail">Email Address *</label>
-                    <input type="email" id="userEmail" name="email" required placeholder="Enter your email">
+                    <input type="email" id="userEmail" name="email" required placeholder="Enter your email" oninvalid="this.setCustomValidity('Please enter a valid email address')" oninput="this.setCustomValidity('')">
                 </div>
-
-                <div class="form-group">
-                    <label for="userPhone">Phone Number</label>
-                    <input type="tel" id="userPhone" name="phone" placeholder="Enter your phone number">
-                </div>
-
-                <!-- ADD ZIP CODE HERE TOO -->
-                <div class="form-group">
-                    <label for="userZipCode">Zip Code</label>
-                    <input type="text" id="userZipCode" name="zipCode" placeholder="Enter your zip code" maxlength="10">
-                </div>
-
-                <button type="submit" class="form-submit-btn" id="formSubmitBtn">
-                    Start Chat
-                </button>
-            </form>
-
-            <div class="form-loading" id="formLoading" style="display: none;">
-                <div class="loading-spinner"></div>
-                <p>Setting up your chat...</p>
             </div>
-        `;
+
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="userPhone">Phone Number *</label>
+                    <input type="tel" id="userPhone" name="phone" placeholder="Enter your phone number" oninvalid="this.setCustomValidity('Please enter your phone number')" oninput="this.setCustomValidity('')">
+                </div>
+                <div class="form-group half-width">
+                    <label for="userZipCode">Zip Code *</label>
+                    <input type="text" id="userZipCode" name="zipCode" placeholder="Enter your zip code" maxlength="10" oninvalid="this.setCustomValidity('Please enter your zip code')" oninput="this.setCustomValidity('')">
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="userGender">Identify as... *</label>
+                    <select id="userGender" name="gender" oninvalid="this.setCustomValidity('Please select your gender')" onchange="this.setCustomValidity('')">
+                        <option value="">Select gender</option>
+                        <option value="male">Male</option>
+                        <option value="female">Female</option>
+                        <option value="non-binary">Non-Binary</option>
+                    </select>
+                </div>
+
+                <div class="form-group half-width">
+                    <label for="userAge">Age *</label>
+                    <input type="number" id="userAge" name="age" placeholder="Enter your age" min="1" max="120" oninvalid="this.setCustomValidity('Please enter your age')" oninput="this.setCustomValidity('')">
+                </div>
+            </div>
+
+            <div class="consent-group">
+                <label class="consent-checkbox">
+                    <input type="checkbox" name="marketingConsent" required id="marketingConsent">
+                    <span class="custom-checkbox"></span>
+                    <span class="consent-text">I consent to receive appointment reminders and practice updates by text and email via OmniDent AI. My data is secured under HIPAA. Reply STOP to unsubscribe. *</span>
+                </label>
+                <div id="consentError" style="color: #ef4444; font-size: 12px; margin-top: 4px; display: none; padding-left: 36px;">You must consent to continue</div>
+            </div>
+
+            <button type="submit" class="form-submit-btn" id="formSubmitBtn">
+                Start Chat
+            </button>
+        </form>
+
+        <div class="form-loading" id="formLoading" style="display: none;">
+            <div class="loading-spinner"></div>
+            <p>Setting up your chat...</p>
+        </div>
+    `;
 
         this.chatForm = document.getElementById('chatForm');
         this.formLoading = document.getElementById('formLoading');
         this.formSubmitBtn = document.getElementById('formSubmitBtn');
 
         this.formOverlay.classList.remove('hidden');
+
+
 
         if (this.chatForm) {
             this.chatForm.addEventListener('submit', (e) => {
@@ -1080,20 +1222,102 @@ addVerificationStyles() {
     `;
     document.head.appendChild(style);
 }
+
+// Add this to your existing addVerificationStyles() method or create a new style method
+addConsentStyles() {
+    if (document.querySelector('style[data-consent-styles]')) return;
+
+    const style = document.createElement('style');
+    style.setAttribute('data-consent-styles', 'true');
+    style.textContent = `
+        .consent-group {
+            margin: 16px 0;
+        }
+
+        .consent-checkbox {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            cursor: pointer;
+            line-height: 1.4;
+        }
+
+        .consent-checkbox input[type="checkbox"] {
+            position: absolute;
+            opacity: 0;
+            cursor: pointer;
+        }
+
+        .checkmark {
+            width: 20px;
+            height: 20px;
+            background-color: white;
+            border: 2px solid #e2e8f0;
+            border-radius: 4px;
+            position: relative;
+            flex-shrink: 0;
+            margin-top: 2px;
+            transition: all 0.2s ease;
+        }
+
+        .consent-checkbox:hover .checkmark {
+            border-color: #34d399;
+        }
+
+        .consent-checkbox input:checked ~ .checkmark {
+            background-color: #34d399;
+            border-color: #34d399;
+        }
+
+        .consent-checkbox input:checked ~ .checkmark:after {
+            content: "";
+            position: absolute;
+            display: block;
+            left: 6px;
+            top: 2px;
+            width: 6px;
+            height: 10px;
+            border: solid white;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
+        }
+
+        .consent-text {
+            font-size: 13px;
+            color: #64748b;
+            line-height: 1.4;
+        }
+
+        .consent-checkbox input:required:invalid ~ .checkmark {
+            border-color: #ef4444;
+        }
+    `;
+    document.head.appendChild(style);
+}
     // Simplified validation - let N8N handle the heavy lifting, then validate with Supabase
 
 // Enhanced handleFormSubmission with detailed debugging
 async handleFormSubmission() {
     const formData = new FormData(this.chatForm);
     const userData = {
-    name: formData.get('name'),
-    email: formData.get('email'),
-    phone: formData.get('phone') || '',
-    zipCode: formData.get('zipCode') || ''
-};
+        name: formData.get('name'),
+        email: formData.get('email'),
+        phone: formData.get('phone') || '',
+        zipCode: formData.get('zipCode') || '',
+        gender: formData.get('gender') || '',
+        age: formData.get('age') || '',
+        marketingConsent: formData.get('marketingConsent') === 'on'
+    };
+
+    // Check consent
+    const consentCheckbox = document.querySelector('input[name="marketingConsent"]');
+    if (consentCheckbox && !consentCheckbox.checked) {
+        this.showFormError('You must consent to continue', 'consent_required');
+        return;
+    }
 
     try {
-        // Use your existing form-submit webhook (which now sends verification email)
+        // Submit to N8N for verification
         const response = await this.submitFormToN8n(userData);
 
         if (!response.success) {
@@ -1101,12 +1325,12 @@ async handleFormSubmission() {
             return;
         }
 
-        // Check if it's a verification response
+        // Store temporarily for verification process
+        sessionStorage.setItem('temp_user_data', JSON.stringify(userData));
+
         if (response.verification_sent) {
-            // Show verification form
             this.showVerificationForm(userData.email, userData.name, userData.phone);
         } else {
-            // Handle old response format (shouldn't happen with your updated workflow)
             this.showFormError('Unexpected response format.');
         }
 
@@ -1144,6 +1368,7 @@ async sendVerificationCode(email, name, phone) {
 showVerificationForm(email, name, phone, zipCode) {
         // Store zip code for later use
     this.tempZipCode = zipCode;
+    this.tempMarketingConsent = this.getMarketingConsent(); // Add this line
     const formContainer = this.formOverlay.querySelector('.form-container');
     if (!formContainer) return;
 
@@ -1246,7 +1471,8 @@ async handleResendCode(email, name, phone) {
             name: name,
             email: email,
             phone: phone,
-            zipCode: zipCode || '' // Include zip code
+            // zipCode: zipCode || '', // Include zip code
+            // marketingConsent: this.tempMarketingConsent || false // Add this line
         });
 
         if (!response.success || !response.verification_sent) {
@@ -1466,6 +1692,25 @@ async verifyCode(email, enteredCode, name) {
         localStorage.setItem('user_email', email);
         localStorage.setItem('email_verified', 'true');
         localStorage.setItem('verification_timestamp', Date.now().toString());
+
+        // Save user profile to Supabase (for new users or profile updates)
+        const tempUserData = sessionStorage.getItem('temp_user_data');
+        if (tempUserData) {
+            try {
+                const userData = JSON.parse(tempUserData);
+                const profileSaved = await this.saveUserProfile(userData);
+                if (profileSaved) {
+                    // console.log('User profile saved to Supabase');
+                } else {
+                    console.warn('Failed to save user profile to Supabase');
+                }
+                // Clean up temporary data
+                sessionStorage.removeItem('temp_user_data');
+            } catch (profileError) {
+                console.error('Error saving user profile:', profileError);
+                // Don't block the user flow if profile save fails
+            }
+        }
 
         // Set user context
         const authenticated = await this.setUserContext(data.contact_id);
@@ -1776,6 +2021,9 @@ async debugContactEmailValidation() {
         email: userData.email,
         phone: userData.phone,
         zipCode: userData.zipCode || '', // Add zip code
+        gender: userData.gender,
+        age: userData.age,
+        marketingConsent: userData.marketingConsent || false, // Add consent
         source: 'chat_widget',
         temp_session_id: tempSessionId,
         timestamp: new Date().toISOString()
@@ -1811,6 +2059,20 @@ async debugContactEmailValidation() {
     async openChatAfterForm(userName, isExistingUser = false) {
     this.formOverlay.classList.add('hidden');
     sessionStorage.setItem('chat_session_active', 'true');
+
+     // First approach: Use the class instance reference
+    if (this.formOverlay) {
+        this.formOverlay.classList.add('hidden');
+        this.formOverlay.style.display = 'none';
+    }
+
+    // Second approach (fallback): Use the ID directly
+    const overlayById = document.getElementById('chatFormOverlay');
+    if (overlayById) {
+        overlayById.classList.add('hidden');
+        overlayById.style.display = 'none';
+    }
+
 
     // Start new session
     this.startNewSession();
@@ -2028,20 +2290,29 @@ async testContextSetting() {
 }
 
     async fetchBotResponse(userMessage) {
-        const contactId = localStorage.getItem('ghl_contact_id');
-        const sessionId = this.getCurrentSessionId();
-        const userName = localStorage.getItem('user_name') || 'Chat Visitor';
-        const userEmail = localStorage.getItem('user_email') || `${sessionId}@example.com`;
+    const contactId = localStorage.getItem('ghl_contact_id');
+    const sessionId = this.getCurrentSessionId();
+    const userName = localStorage.getItem('user_name') || 'Chat Visitor';
+    const userEmail = localStorage.getItem('user_email') || `${sessionId}@example.com`;
 
-        const payload = {
-            message: userMessage,
-            contact_id: contactId,
-            session_id: sessionId,
-            name: userName,
-            email: userEmail,
-            channel: 'webchat', // ADD THIS LINE
-            timestamp: new Date().toISOString()
-        };
+    // Load user profile from Supabase
+    const userProfile = await this.loadUserProfile();
+
+    const payload = {
+        message: userMessage,
+        contact_id: contactId,
+        session_id: sessionId,
+        name: userName,
+        email: userEmail,
+        phone: userProfile?.phone || '',
+        zipCode: userProfile?.zip_code || '',
+        gender: userProfile?.gender || '',
+        age: userProfile?.age || '',
+        marketingConsent: userProfile?.marketing_consent || false,
+        channel: 'webchat',
+        timestamp: new Date().toISOString()
+    };
+
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 120000);
