@@ -39,6 +39,10 @@ class ChatWidget {
        this.soundsEnabled = true;
        this.isFirstLoad = true; // Add this flag
 
+        // Add these new properties for polling
+        this.messagePollingInterval = null;
+        this.pollingActive = false;
+
 
 
         this.init();
@@ -187,6 +191,130 @@ async loadUserProfile() {
     } catch (error) {
         console.error('Error in loadUserProfile:', error);
         return null;
+    }
+}
+
+parseMarkdownLinks(text) {
+    // Simple regex to convert [text](url) to clickable links
+    return text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color: rgb(17,35,89); text-decoration: underline; font-weight: 600;">$1</a>');
+}
+
+// Start polling for incoming messages
+startIncomingMessagePolling() {
+    const contactId = localStorage.getItem('ghl_contact_id');
+    if (!contactId || this.messagePollingInterval || !this.isSupabaseEnabled) return;
+
+    // console.log('Starting message polling for:', contactId);
+    this.pollingActive = true;
+
+    this.messagePollingInterval = setInterval(async () => {
+        if (this.pollingActive) {
+            await this.checkForIncomingMessages();
+        }
+    }, 2000); // Poll every 2 seconds
+
+    // Check immediately
+    this.checkForIncomingMessages();
+}
+
+// Check for undelivered messages
+async checkForIncomingMessages() {
+    const contactId = localStorage.getItem('ghl_contact_id');
+    if (!contactId || !this.isSupabaseEnabled || !this.pollingActive) return;
+
+    // Prevent multiple simultaneous checks
+    if (this.isCheckingMessages) return;
+    this.isCheckingMessages = true;
+
+    try {
+        await this.setUserContext(contactId);
+
+        // Only get messages from the last 30 seconds (very recent)
+        const thirtySecondsAgo = new Date(Date.now() - 30 * 1000).toISOString();
+
+        const { data, error } = await this.supabase
+            .from('chat_messages')
+            .select('*')
+            .eq('contact_id', contactId)
+            .eq('delivered', false)
+            .eq('sender', 'bot')
+            .gte('created_at', thirtySecondsAgo)  // Only last 30 seconds
+            .order('created_at', { ascending: false })  // Newest first
+            .limit(1);  // Only get the most recent one
+
+        if (error) {
+            console.warn('Error checking for incoming messages:', error);
+            return;
+        }
+
+        if (data && data.length > 0) {
+            const latestMessage = data[0];
+            // console.log(`Found new message: ${latestMessage.id}`);
+
+            // Add to chat display
+            this.addMessageToDOM(latestMessage.message, 'bot', latestMessage.created_at);
+
+            // Show notification if chat is closed
+            if (!this.isOpen) {
+                this.showNewMessageNotification();
+            }
+
+            // Immediately mark as delivered
+            await this.markMessageDelivered(latestMessage.id);
+
+            if (this.isOpen) {
+                this.scrollToBottom();
+            }
+        }
+    } catch (error) {
+        console.warn('Error in checkForIncomingMessages:', error);
+    } finally {
+        this.isCheckingMessages = false;
+    }
+}
+
+// Mark message as delivered
+async markMessageDelivered(messageId) {
+    try {
+        const contactId = localStorage.getItem('ghl_contact_id');
+        await this.setUserContext(contactId);
+
+        const { error } = await this.supabase
+            .from('chat_messages')
+            .update({ delivered: true })
+            .eq('id', messageId);
+
+        if (error) {
+            console.warn('Error marking message as delivered:', error);
+        }
+    } catch (error) {
+        console.warn('Error in markMessageDelivered:', error);
+    }
+}
+
+// Show notification for new messages
+showNewMessageNotification() {
+    if (this.messagePrompt) {
+        this.messagePrompt.textContent = "New message! 💬";
+        this.messagePrompt.classList.remove('hidden');
+
+        // Animate the chat button
+        this.chatButton.style.animation = 'chatButtonGlow 1s ease-in-out 3';
+
+        setTimeout(() => {
+            this.chatButton.style.animation = '';
+        }, 3000);
+    }
+}
+
+// Stop polling
+stopIncomingMessagePolling() {
+    this.pollingActive = false;
+
+    if (this.messagePollingInterval) {
+        clearInterval(this.messagePollingInterval);
+        this.messagePollingInterval = null;
+        console.log('Stopped message polling');
     }
 }
 
@@ -916,6 +1044,9 @@ async debugRLSContext() {
             }
         }, 100);
 
+        // ADD THIS LINE at the end, before this.chatInput.focus();
+        this.startIncomingMessagePolling();
+
         this.chatInput.focus();
     }
 
@@ -1005,7 +1136,7 @@ async debugRLSContext() {
 
         formContainer.innerHTML = `
         <div class="form-logo-top">
-            <img src="https://cdn.jsdelivr.net/gh/3dsmilesolutions/omnidentai-chat-widget@main/assets/OmniDent%20AI%20Logo.svg" alt="Company Logo" class="logo-image-top">
+            <img src="assets/OmniDent%20AI%20Logo.svg" alt="Company Logo" class="logo-image-top">
         </div>
 
         <div class="form-header">
@@ -2163,6 +2294,8 @@ async testContextSetting() {
         this.messagesOffset = 0;
         this.hasMoreMessages = true;
         this.clearMessagesDisplay();
+        // ADD THIS LINE to stop polling when clearing history
+        this.stopIncomingMessagePolling();
     }
 
     clearMessagesDisplay() {
@@ -2428,6 +2561,9 @@ async testContextSetting() {
         const displayTime = timestamp || new Date().toISOString();
         const timeStr = this.formatTimestamp(displayTime);
 
+        // Parse markdown for hyperlinks
+        const processedContent = this.parseMarkdownLinks(content);
+
         if (sender === 'bot') {
             messageEl.innerHTML = `
                 <div class="bot-avatar">
@@ -2436,14 +2572,14 @@ async testContextSetting() {
                     </svg>
                 </div>
                 <div class="message-content">
-                    ${content}
+                    ${processedContent}
                     <div class="message-timestamp">${timeStr}</div>
                 </div>
             `;
         } else {
             messageEl.innerHTML = `
                 <div class="message-content">
-                    ${content}
+                    ${processedContent}
                     <div class="message-timestamp">${timeStr}</div>
                 </div>
             `;
@@ -2559,6 +2695,7 @@ async testContextSetting() {
         }, 100);
     }
 }
+
 
 // Initialize chat widget when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
