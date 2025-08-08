@@ -1191,6 +1191,9 @@ async debugRLSContext() {
                     <span class="consent-text">I consent to receive appointment reminders and practice updates by text and email via OmniDent AI. My data is secured under HIPAA. Reply STOP to unsubscribe. *</span>
                 </label>
                 <div id="consentError" style="color: #ef4444; font-size: 12px; margin-top: 4px; display: none; padding-left: 36px;">You must consent to continue</div>
+                <div style="font-size: 12px; color: #64748b; margin-top: 8px; padding-left: 36px; line-height: 1.4;">
+                    By continuing, you agree to our <a href="https://www.omnident.ai/terms-and-conditions" target="_blank" style="color: #34d399; text-decoration: underline;">Terms of Service</a> and <a href="https://www.omnident.ai/terms-and-conditions" target="_blank" style="color: #34d399; text-decoration: underline;">Privacy Policy</a>.
+                </div>
             </div>
 
             <button type="submit" class="form-submit-btn" id="formSubmitBtn">
