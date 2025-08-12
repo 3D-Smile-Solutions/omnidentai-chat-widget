@@ -24,8 +24,8 @@ class ChatWidget {
         this.isLoadingMore = false;
 
         // Supabase configuration
-        this.supabaseUrl = 'https://qdrxmkfcajqenzdxejhp.supabase.co'; // Replace with your actual URL
-        this.supabaseKey = 'sb_publishable_QKwYCf7_uuRqSIzIopv91A_Y_kjKsho'; // Replace with your actual key
+        this.supabaseUrl = 'https://api.omnident.ai'; // Replace with your actual URL
+        this.supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NTQ1MDY4MDAsImV4cCI6MTkxMjI3MzIwMH0.nFQyvI8ERMd-_3NYcQGupY_myuLDjtH-blMmOsUhQRU'; // Replace with your actual key
         this.supabase = null;
         this.isSupabaseEnabled = false;
 
