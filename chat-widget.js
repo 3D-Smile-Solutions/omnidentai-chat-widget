@@ -25,7 +25,7 @@ class ChatWidget {
 
         // Supabase configuration
         this.supabaseUrl = 'https://api.omnident.ai'; // Replace with your actual URL
-        this.supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NTQ1MDY4MDAsImV4cCI6MTkxMjI3MzIwMH0.nFQyvI8ERMd-_3NYcQGupY_myuLDjtH-blMmOsUhQRU'; // Replace with your actual key
+        this.supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzU0NTA2ODAwLCJleHAiOjE5MTIyNzMyMDB9.c3439XIRmJdoWCmt3Y45n9EX3G7g3C3wC0ZkXzkg7XY'; // Replace with your actual key
         this.supabase = null;
         this.isSupabaseEnabled = false;
 
