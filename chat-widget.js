@@ -44,11 +44,104 @@ class ChatWidget {
         // Add these new properties for polling
         this.messagePollingInterval = null;
         this.pollingActive = false;
-
+// ✅ WebSocket properties
+    this.socket = null;
+    this.socketConnected = false;
+    this.crmBackendUrl = 'http://localhost:5000';
 
 
         this.init();
     }
+    // ✅ NEW METHOD: Initialize WebSocket connection
+async initWebSocket() {
+    const contactId = localStorage.getItem('ghl_contact_id');
+    
+    if (!contactId || this.socket) {
+        return; // Already connected or no contact ID
+    }
+
+    try {
+        // Load Socket.io from CDN
+        if (!window.io) {
+            await this.loadSocketIO();
+        }
+
+        console.log('🔌 Connecting widget to WebSocket...');
+
+        this.socket = window.io(this.crmBackendUrl, {
+            auth: {
+                contactId: contactId // Authenticate as widget
+            },
+            transports: ['websocket', 'polling']
+        });
+
+        this.socket.on('connect', () => {
+            console.log('✅ Widget connected to WebSocket');
+            this.socketConnected = true;
+        });
+
+        // ✅ RECEIVE MESSAGES FROM DENTIST
+        this.socket.on('new_message', (data) => {
+            console.log('📩 Received message via WebSocket:', data);
+            
+            // Display message immediately
+            this.addMessageToDOM(data.message, data.sender, data.timestamp);
+            
+            if (!this.isOpen) {
+                this.showNewMessageNotification();
+            }
+            
+            this.scrollToBottom();
+            
+            // Play sound
+            if (data.sender === 'dentist' || data.sender === 'bot') {
+                this.playSound('receive');
+            }
+        });
+
+        // ✅ CONFIRMATION WHEN MESSAGE SENT
+        this.socket.on('message_sent', (data) => {
+            console.log('✅ Message sent confirmation:', data);
+        });
+
+        this.socket.on('message_error', (data) => {
+            console.error('❌ Message error:', data);
+        });
+
+        this.socket.on('disconnect', (reason) => {
+            console.log('🔌 Widget disconnected:', reason);
+            this.socketConnected = false;
+        });
+
+        this.socket.on('connect_error', (error) => {
+            console.error('❌ WebSocket connection error:', error);
+            this.socketConnected = false;
+        });
+
+    } catch (error) {
+        console.error('❌ Failed to initialize WebSocket:', error);
+    }
+}
+// ✅ LOAD SOCKET.IO LIBRARY
+async loadSocketIO() {
+    return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.socket.io/4.5.4/socket.io.min.js';
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
+    });
+}
+
+// ✅ DISCONNECT WEBSOCKET
+disconnectWebSocket() {
+    if (this.socket) {
+        this.socket.disconnect();
+        this.socket = null;
+        this.socketConnected = false;
+        console.log('🔌 WebSocket disconnected');
+    }
+}
 
     // 2. Add this method to initialize sounds
     // 2. Replace initSounds() with this simple version
@@ -667,45 +760,40 @@ stopIncomingMessagePolling() {
     }
 
 
-    async loadFromSupabase(contactId) {
-        const { data, error } = await this.supabase
-            .from('chat_messages')
-            .select('*')
-            .eq('contact_id', contactId)
-            .order('created_at', { ascending: false })
-            .range(0, this.messageLimit - 1);
+   async loadFromSupabase(contactId) {
+    const { data, error } = await this.supabase
+        .from('chat_messages')
+        .select('*')
+        .eq('contact_id', contactId)
+        .order('created_at', { ascending: false })
+        .range(0, this.messageLimit - 1);
 
-        if (error) {
-            throw error;
-        }
-
-        if (data && data.length > 0) {
-            // Reverse to show oldest→newest in UI
-            const recentMessages = data.reverse();
-
-            this.messages = recentMessages.map(msg => ({
-                content: msg.message,
-                sender: msg.sender,
-                timestamp: msg.created_at,
-                sessionId: msg.session_id
-            }));
-
-            // Display messages in DOM
-            this.messages.forEach(msg => {
-                this.addMessageToDOM(msg.content, msg.sender, msg.timestamp);
-            });
-
-            // Show load more button if we got a full batch (suggesting more messages exist)
-            if (data.length === this.messageLimit) {
-                this.loadMoreContainer.style.display = 'block';
-            }
-
-            // console.log(`Loaded ${this.messages.length} recent messages from Supabase`);
-        } else {
-            this.messages = [];
-            console.log('No messages found in Supabase');
-        }
+    if (error) {
+        throw error;
     }
+
+    if (data && data.length > 0) {
+        const recentMessages = data.reverse();
+
+        this.messages = recentMessages.map(msg => ({
+            content: msg.message,
+            sender: msg.sender === 'client' ? 'dentist' : msg.sender, // ✅ Convert 'client' → 'dentist'
+            timestamp: msg.created_at,
+            sessionId: msg.session_id
+        }));
+
+        this.messages.forEach(msg => {
+            this.addMessageToDOM(msg.content, msg.sender, msg.timestamp);
+        });
+
+        if (data.length === this.messageLimit) {
+            this.loadMoreContainer.style.display = 'block';
+        }
+    } else {
+        this.messages = [];
+        console.log('No messages found in Supabase');
+    }
+}
 
     loadFromLocalStorage(contactId) {
         const storageKey = `chat_messages_${contactId}`;
@@ -785,14 +873,14 @@ async addMessage(content, sender) {
 
     this.messages.push(message);
 
-    // Play sound for user messages only here
+    // Play sound for user messages
     if (sender === 'user') {
         this.playSound('send');
     }
-    // Bot sounds are handled in addMessageToDOM for new messages only
 
-    // Save to Supabase if enabled
-    if (this.isSupabaseEnabled) {
+    // ✅ ONLY SAVE TO SUPABASE FOR BOT MESSAGES
+    // User messages are saved by WebSocket handler in backend
+    if (this.isSupabaseEnabled && sender === 'bot') {
         await this.saveMessageToSupabase(content, sender, timestamp);
     }
 
@@ -1045,9 +1133,12 @@ async debugRLSContext() {
                 await this.addMessage(`Welcome back, ${userName}! 👋 Great to see you again. How can I help you today?`, 'bot');
             }
         }, 100);
-
-        // ADD THIS LINE at the end, before this.chatInput.focus();
-        this.startIncomingMessagePolling();
+         
+        // ✅ CONNECT TO WEBSOCKET
+    await this.initWebSocket();
+    
+    // ✅ KEEP POLLING AS BACKUP (for bot messages from N8N)
+    this.startIncomingMessagePolling();// ADD THIS LINE at the end, before this.chatInput.focus();
 
         this.chatInput.focus();
     }
@@ -2348,6 +2439,8 @@ async testContextSetting() {
     async closeChat() {
         this.isOpen = false;
         this.chatWindow.classList.remove('active');
+// ✅ DISCONNECT WEBSOCKET WHEN CLOSING CHAT
+    this.disconnectWebSocket();
 
         // DON'T end session when chat is closed - only on inactivity timeout
         // The session should continue running in the background
@@ -2363,33 +2456,52 @@ async testContextSetting() {
 
 
 
-    async sendMessage() {
+async sendMessage() {
     const message = this.chatInput.value.trim();
     if (!message || this.isSending) return;
 
-    // Check if session is active, if not - restart automatically
     if (!this.sessionActive) {
-        // Remove any existing session timeout messages
         const systemMessages = document.querySelectorAll('.message.system');
         systemMessages.forEach(msg => msg.remove());
-
-        // Start new session automatically
         this.startNewSession();
-
-        // Add a quick "restarted" message
         await this.addSystemMessage('🔄 New conversation started');
     }
 
     this.isSending = true;
     this.updateSendButton();
 
-    // Clear input IMMEDIATELY to fix delay
     const messageToSend = message;
     this.chatInput.value = '';
-    this.chatInput.style.height = 'auto'; // Reset height for textarea
+    this.chatInput.style.height = 'auto';
 
+    // ✅ Add message to UI first
     await this.addMessage(messageToSend, 'user');
 
+    // ✅ CHECK IF BOT SHOULD RESPOND
+    const contactId = localStorage.getItem('ghl_contact_id');
+    const shouldRespond = await this.shouldBotRespond(contactId);
+
+    console.log('🤖 Bot should respond:', shouldRespond);
+
+    // ✅ ALWAYS SEND VIA WEBSOCKET (for real-time CRM updates)
+    if (this.socketConnected && this.socket) {
+        console.log('📤 Sending to CRM via WebSocket');
+        this.socket.emit('send_message', {
+            content: messageToSend
+        });
+    }
+
+    // ✅ IF BOT IS PAUSED (Manual Mode) - Only WebSocket (already sent above)
+    if (!shouldRespond) {
+        console.log('🛑 Bot paused - message sent to dentist only');
+        this.isSending = false;
+        this.updateSendButton();
+        return;
+    }
+
+    // ✅ IF BOT IS ACTIVE (Auto Mode) - Also send to N8N for bot response
+    console.log('🤖 Bot active - sending to N8N webhook for bot response');
+    
     this.showTypingIndicator();
 
     try {
@@ -2407,6 +2519,38 @@ async testContextSetting() {
     } finally {
         this.isSending = false;
         this.updateSendButton();
+    }
+}
+// ✅ NEW METHOD: Save user message to database
+async saveUserMessageToDatabase(content, contactId) {
+    if (!this.isSupabaseEnabled) {
+        console.log('Supabase not enabled, skipping message save');
+        return;
+    }
+
+    try {
+        await this.setUserContext(contactId);
+
+        const { error } = await this.supabase
+            .from('chat_messages')
+            .insert({
+                contact_id: contactId,
+                user_email: localStorage.getItem('user_email'),
+                session_id: this.getCurrentSessionId(),
+                message: content,
+                sender: 'user', // ✅ Patient message
+                channel: 'webchat',
+                created_at: new Date().toISOString(),
+                delivered: true // Already delivered (in UI)
+            });
+
+        if (error) {
+            console.warn('Failed to save user message to Supabase:', error);
+        } else {
+            console.log('✅ User message saved to database');
+        }
+    } catch (error) {
+        console.warn('Error saving user message:', error);
     }
 }
 
