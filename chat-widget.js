@@ -1,3 +1,4 @@
+console.log('🚀 CHAT WIDGET VERSION: 2.0 - BOT CONTROL ENABLED');
 class ChatWidget {
     constructor() {
         this.isOpen = false;
@@ -6,6 +7,7 @@ class ChatWidget {
         this.formWebhookUrl = 'https://n8n.3dsmilesolutions.ai/webhook/form-submit';
         this.metricsWebhookUrl = 'https://n8n.3dsmilesolutions.ai/webhook/extract-metrics';
         this.codeVerificationUrl = 'https://n8n.3dsmilesolutions.ai/webhook/verify-code';
+        this.crmBackendUrl = 'http://localhost:5000'; 
         this.isSending = false;
         this.maxStoredMessages = 100;
         this.messageExpiryDays = 30;
@@ -2425,13 +2427,25 @@ async testContextSetting() {
     }
 }
 
-    async fetchBotResponse(userMessage) {
+async fetchBotResponse(userMessage) {
     const contactId = localStorage.getItem('ghl_contact_id');
     const sessionId = this.getCurrentSessionId();
     const userName = localStorage.getItem('user_name') || 'Chat Visitor';
     const userEmail = localStorage.getItem('user_email') || `${sessionId}@example.com`;
 
-    // Load user profile from Supabase
+    // ✅ NEW: Check if bot should respond BEFORE sending to N8N
+    console.log('🔍 Checking if bot should respond for:', contactId);
+    const shouldRespond = await this.shouldBotRespond(contactId);
+    
+    if (!shouldRespond) {
+        console.log('🛑 Bot is paused - dentist is handling this conversation');
+        // Return a message WITHOUT calling the webhook
+        return "Your message has been received. A team member will respond shortly.";
+    }
+
+    console.log('🤖 Bot is active - sending to N8N webhook');
+
+    // ✅ Bot is allowed - continue with normal flow
     const userProfile = await this.loadUserProfile();
 
     const payload = {
@@ -2449,28 +2463,27 @@ async testContextSetting() {
         timestamp: new Date().toISOString()
     };
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
 
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 120000);
+    const response = await fetch(this.webhookUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+    });
 
-        const response = await fetch(this.webhookUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload),
-            signal: controller.signal
-        });
+    clearTimeout(timeoutId);
 
-        clearTimeout(timeoutId);
-
-        if (!response.ok) {
-            throw new Error(`HTTP error: ${response.status}`);
-        }
-
-        const data = await response.json();
-        return this.parseN8nMessages(data);
+    if (!response.ok) {
+        throw new Error(`HTTP error: ${response.status}`);
     }
+
+    const data = await response.json();
+    return this.parseN8nMessages(data);
+} 
 
     parseN8nMessages(data) {
         try {
@@ -2522,7 +2535,50 @@ async testContextSetting() {
             return "Thank you for your message!";
         }
     }
+//  NEW method 
+// In chat-widget.js, update shouldBotRespond method:
 
+async shouldBotRespond(contactId) {
+    if (!contactId) {
+        console.log('⚠️ No contactId - allowing bot to respond');
+        return true;
+    }
+
+    try {
+        const url = `${this.crmBackendUrl}/api/conversation-control/should-respond/${contactId}`;
+        console.log('📡 Fetching bot status from:', url);
+        
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        });
+
+        console.log('📊 Response status:', response.status);
+        console.log('📊 Response ok:', response.ok);
+
+        if (!response.ok) {
+            console.warn('⚠️ Failed to check bot control status, defaulting to allow');
+            console.warn('⚠️ Response status:', response.status, response.statusText);
+            return true;
+        }
+
+        const data = await response.json();
+        console.log('📦 Response data:', data);
+        
+        const shouldRespond = data.shouldBotRespond !== false;
+        
+        console.log(`✅ Final decision: shouldBotRespond = ${shouldRespond}`);
+        
+        return shouldRespond;
+
+    } catch (error) {
+        console.error('❌ Error checking bot control:', error);
+        console.error('❌ Error details:', error.message);
+        return true; // Default to allowing bot on error
+    }
+}
     getSessionId() {
         const contactId = localStorage.getItem('ghl_contact_id');
         if (contactId) {
@@ -2555,41 +2611,62 @@ async testContextSetting() {
         }
     }
 
-    addMessageToDOM(content, sender, timestamp = null, prepend = false) {
-        if (!this.chatMessages) return;
+addMessageToDOM(content, sender, timestamp = null, prepend = false) {
+    if (!this.chatMessages) return;
 
-        const messageEl = document.createElement('div');
-        messageEl.className = `message ${sender}`;
+    // ✅ CONVERT 'client' TO 'dentist' FOR DISPLAY
+    const displaySender = sender === 'client' ? 'dentist' : sender;
+    
+    console.log('📩 Displaying as:', displaySender, '(original:', sender + ')');
 
-        const displayTime = timestamp || new Date().toISOString();
-        const timeStr = this.formatTimestamp(displayTime);
+    const messageEl = document.createElement('div');
+    messageEl.className = `message ${displaySender}`; // ✅ Use displaySender
 
-        // Parse markdown for hyperlinks
-        const processedContent = this.parseMarkdownLinks(content);
+    const displayTime = timestamp || new Date().toISOString();
+    const timeStr = this.formatTimestamp(displayTime);
 
-        if (sender === 'bot') {
-            messageEl.innerHTML = `
-                <div class="bot-avatar">
-                    <svg viewBox="0 0 256 256">
-                        <path d="M224.32,114.24a56,56,0,0,0-60.07-76.57A56,56,0,0,0,67.93,51.44a56,56,0,0,0-36.25,90.32A56,56,0,0,0,69,217A56.39,56.39,0,0,0,83.59,219a55.75,55.75,0,0,0,8.17-.61a56,56,0,0,0,96.31-13.78,56,56,0,0,0,36.25-90.32ZM182.85,54.43a40,40,0,0,1,28.56,48c-.95-.63-1.91-1.24-2.91-1.81L164,74.88a8,8,0,0,0-8,0l-44,25.41V81.81l40.5-23.38A39.76,39.76,0,0,1,182.85,54.43ZM144,137.24l-16,9.24-16-9.24V118.76l16-9.24,16,9.24ZM80,72a40,40,0,0,1,67.53-29c-1,.51-2,1-3,1.62L100,70.27a8,8,0,0,0-4,6.92V128l-16-9.24ZM40.86,86.93A39.75,39.75,0,0,1,64.12,68.57C64.05,69.71,64,70.85,64,72v51.38a8,8,0,0,0,4,6.93l44,25.4L96,165,55.5,141.57A40,40,0,0,1,40.86,86.93ZM73.15,201.57a40,40,0,0,1-28.56-48c.95.63,1.91,1.24,2.91,1.81L92,181.12a8,8,0,0,0,8,0l44-25.41v18.48l-40.5,23.38A39.76,39.76,0,0,1,73.15,201.57ZM176,184a40,40,0,0,1-67.52,29.05c1-.51,2-1.05,3-1.63L156,185.73a8,8,0,0,0,4-6.92V128l16,9.24Zm39.14-14.93a39.75,39.75,0,0,1-23.26,18.36c.07-1.14.12-2.28.12-3.43V132.62a8,8,0,0,0-4-6.93l-44-25.4,16-9.24,40.5,23.38A40,40,0,0,1,215.14,169.07Z"/>
-                    </svg>
-                </div>
-                <div class="message-content">
-                    ${processedContent}
-                    <div class="message-timestamp">${timeStr}</div>
-                </div>
-            `;
-        } else {
-            messageEl.innerHTML = `
-                <div class="message-content">
-                    ${processedContent}
-                    <div class="message-timestamp">${timeStr}</div>
-                </div>
-            `;
-        }
+    const processedContent = this.parseMarkdownLinks(content);
 
-         if (prepend) {
-        // Historical messages - NO SOUND
+    // ✅ BOT MESSAGES (Green AI icon)
+    if (displaySender === 'bot') {
+        messageEl.innerHTML = `
+            <div class="bot-avatar">
+                <svg viewBox="0 0 256 256">
+                    <path d="M224.32,114.24a56,56,0,0,0-60.07-76.57A56,56,0,0,0,67.93,51.44a56,56,0,0,0-36.25,90.32A56,56,0,0,0,69,217A56.39,56.39,0,0,0,83.59,219a55.75,55.75,0,0,0,8.17-.61a56,56,0,0,0,96.31-13.78,56,56,0,0,0,36.25-90.32ZM182.85,54.43a40,40,0,0,1,28.56,48c-.95-.63-1.91-1.24-2.91-1.81L164,74.88a8,8,0,0,0-8,0l-44,25.41V81.81l40.5-23.38A39.76,39.76,0,0,1,182.85,54.43ZM144,137.24l-16,9.24-16-9.24V118.76l16-9.24,16,9.24ZM80,72a40,40,0,0,1,67.53-29c-1,.51-2,1-3,1.62L100,70.27a8,8,0,0,0-4,6.92V128l-16-9.24ZM40.86,86.93A39.75,39.75,0,0,1,64.12,68.57C64.05,69.71,64,70.85,64,72v51.38a8,8,0,0,0,4,6.93l44,25.4L96,165,55.5,141.57A40,40,0,0,1,40.86,86.93ZM73.15,201.57a40,40,0,0,1-28.56-48c.95.63,1.91,1.24,2.91,1.81L92,181.12a8,8,0,0,0,8,0l44-25.41v18.48l-40.5,23.38A39.76,39.76,0,0,1,73.15,201.57ZM176,184a40,40,0,0,1-67.52,29.05c1-.51,2-1.05,3-1.63L156,185.73a8,8,0,0,0,4-6.92V128l16,9.24Zm39.14-14.93a39.75,39.75,0,0,1-23.26,18.36c.07-1.14.12-2.28.12-3.43V132.62a8,8,0,0,0-4-6.93l-44-25.4,16-9.24,40.5,23.38A40,40,0,0,1,215.14,169.07Z"/>
+                </svg>
+            </div>
+            <div class="message-content">
+                ${processedContent}
+                <div class="message-timestamp">${timeStr}</div>
+            </div>
+        `;
+    } 
+    // ✅ DENTIST MESSAGES (Blue person icon)
+    else if (displaySender === 'dentist') {
+        messageEl.innerHTML = `
+            <div class="bot-avatar">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 12C14.21 12 16 10.21 16 8C16 5.79 14.21 4 12 4C9.79 4 8 5.79 8 8C8 10.21 9.79 12 12 12Z" fill="currentColor"/>
+                    <path d="M12 14C8.13 14 5 15.79 5 18V20H19V18C19 15.79 15.87 14 12 14Z" fill="currentColor"/>
+                </svg>
+            </div>
+            <div class="message-content">
+                ${processedContent}
+                <div class="message-timestamp">${timeStr}</div>
+            </div>
+        `;
+    }
+    // ✅ USER MESSAGES (No avatar, right-aligned)
+    else {
+        messageEl.innerHTML = `
+            <div class="message-content">
+                ${processedContent}
+                <div class="message-timestamp">${timeStr}</div>
+            </div>
+        `;
+    }
+
+    if (prepend) {
         const firstMessage = this.chatMessages.querySelector('.message');
         if (firstMessage) {
             this.chatMessages.insertBefore(messageEl, firstMessage);
@@ -2597,17 +2674,15 @@ async testContextSetting() {
             this.chatMessages.appendChild(messageEl);
         }
     } else {
-        // New messages - PLAY SOUND
         this.chatMessages.appendChild(messageEl);
         this.scrollToBottom();
 
-        // Only play sound for NEW bot messages (not historical ones)
-        if (sender === 'bot') {
+        // ✅ Play sound for bot and dentist messages
+        if (displaySender === 'bot' || displaySender === 'dentist') {
             this.playSound('receive');
         }
     }
 }
-
    addSystemMessageToDOM(content, timestamp, showNewSessionButton = false) {
     if (!this.chatMessages) return;
 
