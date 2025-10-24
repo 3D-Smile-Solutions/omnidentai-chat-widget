@@ -332,23 +332,23 @@
         }
 
         /* Form Overlay Styles */
-        .chat-form-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(255, 255, 255, 0.98);
-            backdrop-filter: blur(10px);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 10;
-            border-radius: 16px;
-            padding: 0;
-            box-sizing: border-box;
-            overflow-y: auto;
-        }
+       .chat-form-overlay {
+    position: fixed;  /* ✅ Changed from 'absolute' to 'fixed' */
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(255, 255, 255, 0.98);
+    backdrop-filter: blur(10px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 99999;  /* ✅ Also increase z-index to ensure it's on top */
+    border-radius: 0;  /* ✅ Remove border-radius for full screen */
+    padding: 0;
+    box-sizing: border-box;
+    overflow-y: auto;
+}
 
         .chat-form-overlay.hidden {
             display: none;
@@ -1173,7 +1173,7 @@
 
 <!-- <script src="https://cdn.jsdelivr.net/gh/3dsmilesolutions/omnidentai-chat-widget@e01f19b0f69dccf2e22ad87f7647d140aa1d6ae1/chat-widget.js"></script> -->
 <script src="chat-widget.js"></script>
-<script>
+<!-- <script>
 document.addEventListener('DOMContentLoaded', () => {
     if (typeof ChatWidget !== 'undefined') {
         console.log('✅ Chat widget initialized successfully');
@@ -1181,6 +1181,6 @@ document.addEventListener('DOMContentLoaded', () => {
         console.error('❌ ChatWidget class not found - check if JS file loaded');
     }
 });
-</script>
+</script> -->
 </body>
 </html>

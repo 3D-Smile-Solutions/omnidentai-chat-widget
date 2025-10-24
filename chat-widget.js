@@ -56,29 +56,48 @@ class ChatWidget {
     // SECTION: INITIALIZATION
     // ================================
 
-    async init() {
-        await this.initSupabase();
+   async init() {
+    console.log('🔧 Init started...');
+    
+    await this.initSupabase();
 
-        this.chatButton = document.getElementById('chatButton');
-        this.chatWindow = document.getElementById('chatWindow');
-        this.closeBtn = document.getElementById('closeBtn');
-        this.chatInput = document.getElementById('chatInput');
-        this.sendBtn = document.getElementById('sendBtn');
-        this.chatMessages = document.getElementById('chatMessages');
-        this.messagePrompt = document.getElementById('messagePrompt');
+    // Get all DOM elements
+    this.chatButton = document.getElementById('chatButton');
+    this.chatWindow = document.getElementById('chatWindow');
+    this.closeBtn = document.getElementById('closeBtn');
+    this.chatInput = document.getElementById('chatInput');
+    this.sendBtn = document.getElementById('sendBtn');
+    this.chatMessages = document.getElementById('chatMessages');
+    this.messagePrompt = document.getElementById('messagePrompt');
 
-        this.formOverlay = document.getElementById('chatFormOverlay');
-        this.chatForm = document.getElementById('chatForm');
-        this.formLoading = document.getElementById('formLoading');
-        this.formSubmitBtn = document.getElementById('formSubmitBtn');
+    this.formOverlay = document.getElementById('chatFormOverlay');
+    this.chatForm = document.getElementById('chatForm');
+    this.formLoading = document.getElementById('formLoading');
+    this.formSubmitBtn = document.getElementById('formSubmitBtn');
 
-        this.loadMoreContainer = null;
-        this.loadMoreBtn = null;
-        this.createLoadMoreButton();
-
-        this.bindEvents();
-        this.setupFormHandlers();
+    // Verify critical elements
+    if (!this.chatButton) {
+        console.error('❌ Chat button not found!');
+        return;
     }
+    if (!this.chatWindow) {
+        console.error('❌ Chat window not found!');
+        return;
+    }
+
+    console.log('✅ All DOM elements found');
+
+    this.loadMoreContainer = null;
+    this.loadMoreBtn = null;
+    this.createLoadMoreButton();
+
+    // Bind events AFTER elements are confirmed to exist
+    this.bindEvents();
+    this.setupFormHandlers();
+    
+    console.log('✅ Events bound successfully');
+    console.log('✅ Widget initialization complete');
+}
 
     async initSupabase() {
         try {
@@ -133,52 +152,53 @@ class ChatWidget {
     // SECTION: EMAIL CHECK & NEW FORMS
     // ================================
 
-    async checkEmailExists(email) {
-        if (!this.isSupabaseEnabled) {
-            return { exists: false };
-        }
-
-        // Rate limiting
-        const lastCheck = sessionStorage.getItem('last_email_check');
-        const now = Date.now();
-        
-        if (lastCheck && (now - parseInt(lastCheck)) < 2000) {
-            console.warn('Rate limit: Please wait before checking again');
-            return { exists: false, rateLimited: true };
-        }
-        
-        sessionStorage.setItem('last_email_check', now.toString());
-
-        try {
-            const { data, error } = await this.supabase
-                .from('user_profiles')
-                .select('contact_id, first_name, last_name, email')
-                .eq('email', email)
-                .single();
-
-            if (error) {
-                if (error.code === 'PGRST116') {
-                    console.log('Email not found - new user');
-                    return { exists: false };
-                }
-                console.error('Error checking email:', error);
-                return { exists: false };
-            }
-
-            console.log('Email found - existing user');
-            return { 
-                exists: true, 
-                contactId: data.contact_id,
-                firstName: data.first_name,
-                lastName: data.last_name,
-                fullName: `${data.first_name} ${data.last_name}`,
-                email: data.email
-            };
-        } catch (error) {
-            console.error('Error in checkEmailExists:', error);
-            return { exists: false };
-        }
+async checkEmailExists(email) {
+    if (!this.isSupabaseEnabled) {
+        return { exists: false };
     }
+
+    // Rate limiting
+    const lastCheck = sessionStorage.getItem('last_email_check');
+    const now = Date.now();
+    
+    if (lastCheck && (now - parseInt(lastCheck)) < 2000) {
+        console.warn('Rate limit: Please wait before checking again');
+        return { exists: false, rateLimited: true };
+    }
+    
+    sessionStorage.setItem('last_email_check', now.toString());
+
+    try {
+        const { data, error } = await this.supabase
+            .from('user_profiles')
+            .select('contact_id, first_name, last_name, email')
+            .eq('email', email)
+            .maybeSingle(); // ✅ Changed to maybeSingle()
+
+        if (error) {
+            console.error('Error checking email:', error);
+            return { exists: false };
+        }
+
+        if (!data) {
+            console.log('✅ Email not found - new user');
+            return { exists: false };
+        }
+
+        console.log('✅ Email found - existing user:', data.first_name);
+        return { 
+            exists: true, 
+            contactId: data.contact_id,
+            firstName: data.first_name,
+            lastName: data.last_name,
+            fullName: `${data.first_name} ${data.last_name}`,
+            email: data.email
+        };
+    } catch (error) {
+        console.error('Error in checkEmailExists:', error);
+        return { exists: false };
+    }
+}
 
     validateEmail(email) {
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -188,100 +208,128 @@ class ChatWidget {
         if (email.length > 254) return false;
         return true;
     }
-
-    showEmailOnlyForm() {
-        const formContainer = this.formOverlay.querySelector('.form-container');
-        if (!formContainer) return;
-
-        formContainer.innerHTML = `
-            <div class="form-logo-top">
-                <img src="https://cdn.jsdelivr.net/gh/3dsmilesolutions/omnidentai-chat-widget@main/assets/OmniDent%20AI%20Logo.svg" alt="Company Logo" class="logo-image-top">
-            </div>
-
-            <div class="form-header">
-                <h3>Welcome! 👋</h3>
-                <p>Enter your email to get started</p>
-            </div>
-
-            <form class="chat-form" id="emailCheckForm">
-                <div class="form-group">
-                    <label for="userEmailCheck">Email Address *</label>
-                    <input 
-                        type="email" 
-                        id="userEmailCheck" 
-                        name="email" 
-                        required 
-                        placeholder="Enter your email"
-                        autocomplete="email"
-                    >
-                </div>
-
-                <button type="submit" class="form-submit-btn" id="emailCheckBtn">
-                    Continue
-                </button>
-            </form>
-
-            <div class="form-loading" id="emailCheckLoading" style="display: none;">
-                <div class="loading-spinner"></div>
-                <p>Checking your email...</p>
-            </div>
-        `;
-
+showEmailOnlyForm() {
+    console.log('📧 showEmailOnlyForm() called');
+    
+    // ✅ CRITICAL: Open the chat window FIRST
+    this.isOpen = true;
+    this.chatWindow.classList.add('active');
+    console.log('✅ Chat window activated');
+    
+    // Hide message prompt
+    this.messagePrompt.classList.add('hidden');
+    
+    // ✅ Show the overlay
+    if (this.formOverlay) {
         this.formOverlay.classList.remove('hidden');
         this.formOverlay.style.display = 'flex';
-
-        const emailForm = document.getElementById('emailCheckForm');
-        const emailLoading = document.getElementById('emailCheckLoading');
-
-        if (emailForm) {
-            emailForm.addEventListener('submit', async (e) => {
-                e.preventDefault();
-                
-                const email = document.getElementById('userEmailCheck').value.trim();
-                
-                if (!this.validateEmail(email)) {
-                    this.showFormError('Please enter a valid email address');
-                    return;
-                }
-
-                emailForm.style.display = 'none';
-                emailLoading.style.display = 'flex';
-
-                const result = await this.checkEmailExists(email);
-
-                emailLoading.style.display = 'none';
-
-                if (result.rateLimited) {
-                    this.showFormError('Please wait a moment before trying again');
-                    emailForm.style.display = 'flex';
-                    return;
-                }
-
-                if (result.exists) {
-                    console.log('Existing user - sending verification code');
-                    
-                    sessionStorage.setItem('temp_email', email);
-                    sessionStorage.setItem('temp_user_name', result.fullName);
-                    sessionStorage.setItem('temp_contact_id', result.contactId);
-
-                    await this.sendVerificationCodeExistingUser(email, result.fullName, result.contactId);
-                    
-                } else {
-                    console.log('New user - showing full registration form');
-                    sessionStorage.setItem('temp_email', email);
-                    this.showFullRegistrationForm(email);
-                }
-            });
-        }
-
-        setTimeout(() => {
-            const emailInput = document.getElementById('userEmailCheck');
-            if (emailInput) {
-                this.addSpacebarFixToInput(emailInput);
-                emailInput.focus();
-            }
-        }, 100);
+        console.log('✅ Form overlay displayed');
+    } else {
+        console.error('❌ Form overlay not found!');
+        return;
     }
+
+    const formContainer = this.formOverlay.querySelector('.form-container');
+    if (!formContainer) {
+        console.error('❌ Form container not found!');
+        return;
+    }
+
+    console.log('✅ Building email form...');
+    
+    formContainer.innerHTML = `
+        <div class="form-logo-top">
+            <img src="https://cdn.jsdelivr.net/gh/3dsmilesolutions/omnidentai-chat-widget@main/assets/OmniDent%20AI%20Logo.svg" alt="Company Logo" class="logo-image-top">
+        </div>
+
+        <div class="form-header">
+            <h3>Welcome! 👋</h3>
+            <p>Enter your email to get started</p>
+        </div>
+
+        <form class="chat-form" id="emailCheckForm">
+            <div class="form-group">
+                <label for="userEmailCheck">Email Address *</label>
+                <input 
+                    type="email" 
+                    id="userEmailCheck" 
+                    name="email" 
+                    required 
+                    placeholder="Enter your email"
+                    autocomplete="email"
+                >
+            </div>
+
+            <button type="submit" class="form-submit-btn" id="emailCheckBtn">
+                Continue
+            </button>
+        </form>
+
+        <div class="form-loading" id="emailCheckLoading" style="display: none;">
+            <div class="loading-spinner"></div>
+            <p>Checking your email...</p>
+        </div>
+    `;
+
+    console.log('✅ Email form HTML injected');
+
+    const emailForm = document.getElementById('emailCheckForm');
+    const emailLoading = document.getElementById('emailCheckLoading');
+
+    if (emailForm) {
+        console.log('✅ Email form found, binding submit handler');
+        emailForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            console.log('📨 Email form submitted');
+            
+            const email = document.getElementById('userEmailCheck').value.trim();
+            
+            if (!this.validateEmail(email)) {
+                this.showFormError('Please enter a valid email address');
+                return;
+            }
+
+            emailForm.style.display = 'none';
+            emailLoading.style.display = 'flex';
+
+            const result = await this.checkEmailExists(email);
+
+            emailLoading.style.display = 'none';
+
+            if (result.rateLimited) {
+                this.showFormError('Please wait a moment before trying again');
+                emailForm.style.display = 'flex';
+                return;
+            }
+
+            if (result.exists) {
+                console.log('✅ Existing user - sending verification code');
+                
+                sessionStorage.setItem('temp_email', email);
+                sessionStorage.setItem('temp_user_name', result.fullName);
+                sessionStorage.setItem('temp_contact_id', result.contactId);
+
+                await this.sendVerificationCodeExistingUser(email, result.fullName, result.contactId);
+                
+            } else {
+                console.log('✅ New user - showing full registration form');
+                sessionStorage.setItem('temp_email', email);
+                this.showFullRegistrationForm(email);
+            }
+        });
+    } else {
+        console.error('❌ Could not find email form after injection!');
+    }
+
+    setTimeout(() => {
+        const emailInput = document.getElementById('userEmailCheck');
+        if (emailInput) {
+            this.addSpacebarFixToInput(emailInput);
+            emailInput.focus();
+            console.log('✅ Email input focused');
+        }
+    }, 100);
+}
 
     async sendVerificationCodeExistingUser(email, name, contactId) {
         try {
@@ -317,105 +365,134 @@ class ChatWidget {
         }
     }
 
-    showFullRegistrationForm(email = '') {
-        const formContainer = this.formOverlay.querySelector('.form-container');
-        if (!formContainer) return;
-
-        formContainer.innerHTML = `
-            <div class="form-logo-top">
-                <img src="https://cdn.jsdelivr.net/gh/3dsmilesolutions/omnidentai-chat-widget@main/assets/OmniDent%20AI%20Logo.svg" alt="Company Logo" class="logo-image-top">
-            </div>
-
-            <div class="form-header">
-                <h3>Complete Your Profile</h3>
-                <p>Tell us a bit more about yourself</p>
-            </div>
-
-            <form class="chat-form" id="chatForm">
-                <div class="form-row">
-                    <div class="form-group half-width">
-                        <label for="userName">Full Name *</label>
-                        <input type="text" id="userName" name="name" required placeholder="Enter your full name">
-                    </div>
-                    <div class="form-group half-width">
-                        <label for="userEmail">Email Address *</label>
-                        <input type="email" id="userEmail" name="email" required placeholder="Enter your email" value="${email}" ${email ? 'readonly style="background-color: #f3f4f6; cursor: not-allowed;"' : ''}>
-                    </div>
-                </div>
-
-                <div class="form-row">
-                    <div class="form-group half-width">
-                        <label for="userPhone">Phone Number *</label>
-                        <input type="tel" id="userPhone" name="phone" required placeholder="Enter your phone number">
-                    </div>
-                    <div class="form-group half-width">
-                        <label for="userZipCode">Zip Code *</label>
-                        <input type="text" id="userZipCode" name="zipCode" required placeholder="Enter your zip code" maxlength="10">
-                    </div>
-                </div>
-
-                <div class="form-row">
-                    <div class="form-group half-width">
-                        <label for="userGender">Identify as... *</label>
-                        <select id="userGender" name="gender" required>
-                            <option value="">Select gender</option>
-                            <option value="male">Male</option>
-                            <option value="female">Female</option>
-                            <option value="non-binary">Non-Binary</option>
-                        </select>
-                    </div>
-                    <div class="form-group half-width">
-                        <label for="userAge">Age *</label>
-                        <input type="number" id="userAge" name="age" required placeholder="Enter your age" min="1" max="120">
-                    </div>
-                </div>
-
-                <div class="consent-group">
-                    <label class="consent-checkbox">
-                        <input type="checkbox" name="marketingConsent" required id="marketingConsent">
-                        <span class="custom-checkbox"></span>
-                        <span class="consent-text">I consent to receive appointment reminders and practice updates by text and email via OmniDent AI. My data is secured under HIPAA. Reply STOP to unsubscribe. *</span>
-                    </label>
-                    <div id="consentError" style="color: #ef4444; font-size: 12px; margin-top: 4px; display: none; padding-left: 36px;">You must consent to continue</div>
-                    <div style="font-size: 12px; color: #64748b; margin-top: 8px; padding-left: 36px; line-height: 1.4;">
-                        By continuing, you agree to our <a href="https://www.omnident.ai/terms-and-conditions" target="_blank" style="color: #34d399; text-decoration: underline;">Terms of Service</a> and <a href="https://www.omnident.ai/terms-and-conditions" target="_blank" style="color: #34d399; text-decoration: underline;">Privacy Policy</a>.
-                    </div>
-                </div>
-
-                <button type="submit" class="form-submit-btn">
-                    Create Account
-                </button>
-            </form>
-
-            <div class="form-loading" id="formLoading" style="display: none;">
-                <div class="loading-spinner"></div>
-                <p>Setting up your account...</p>
-            </div>
-        `;
-
-        this.chatForm = document.getElementById('chatForm');
-        this.formLoading = document.getElementById('formLoading');
-        
-        if (this.chatForm) {
-            this.chatForm.addEventListener('submit', (e) => {
-                e.preventDefault();
-                this.handleFormSubmission();
-            });
-        }
-
-        setTimeout(() => {
-            const nameInput = document.getElementById('userName');
-            const emailInput = document.getElementById('userEmail');
-            const phoneInput = document.getElementById('userPhone');
-            
-            this.addSpacebarFixToInput(nameInput);
-            this.addSpacebarFixToInput(emailInput);
-            this.addSpacebarFixToInput(phoneInput);
-            
-            if (nameInput) nameInput.focus();
-        }, 100);
+   showFullRegistrationForm(email = '') {
+    console.log('📝 showFullRegistrationForm() called with email:', email);
+    
+    // ✅ Ensure chat window is active
+    this.isOpen = true;
+    this.chatWindow.classList.add('active');
+    this.messagePrompt.classList.add('hidden');
+    
+    if (this.formOverlay) {
+        this.formOverlay.classList.remove('hidden');
+        this.formOverlay.style.display = 'flex';
+        console.log('✅ Form overlay shown');
+    } else {
+        console.error('❌ Form overlay not found!');
+        return;
+    }
+    
+    const formContainer = this.formOverlay.querySelector('.form-container');
+    if (!formContainer) {
+        console.error('❌ Form container not found!');
+        return;
     }
 
+    console.log('✅ Form container found, injecting HTML...');
+
+    formContainer.innerHTML = `
+        <div class="form-logo-top">
+            <img src="https://cdn.jsdelivr.net/gh/3dsmilesolutions/omnidentai-chat-widget@main/assets/OmniDent%20AI%20Logo.svg" alt="Company Logo" class="logo-image-top">
+        </div>
+
+        <div class="form-header">
+            <h3>Complete Your Profile</h3>
+            <p>Tell us a bit more about yourself</p>
+        </div>
+
+        <form class="chat-form" id="chatForm">
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="userName">Full Name *</label>
+                    <input type="text" id="userName" name="name" required placeholder="Enter your full name">
+                </div>
+                <div class="form-group half-width">
+                    <label for="userEmail">Email Address *</label>
+                    <input type="email" id="userEmail" name="email" required placeholder="Enter your email" value="${email}" ${email ? 'readonly style="background-color: #f3f4f6; cursor: not-allowed;"' : ''}>
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="userPhone">Phone Number *</label>
+                    <input type="tel" id="userPhone" name="phone" required placeholder="Enter your phone number">
+                </div>
+                <div class="form-group half-width">
+                    <label for="userZipCode">Zip Code *</label>
+                    <input type="text" id="userZipCode" name="zipCode" required placeholder="Enter your zip code" maxlength="10">
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="userGender">Identify as... *</label>
+                    <select id="userGender" name="gender" required>
+                        <option value="">Select gender</option>
+                        <option value="male">Male</option>
+                        <option value="female">Female</option>
+                        <option value="non-binary">Non-Binary</option>
+                    </select>
+                </div>
+                <div class="form-group half-width">
+                    <label for="userAge">Age *</label>
+                    <input type="number" id="userAge" name="age" required placeholder="Enter your age" min="1" max="120">
+                </div>
+            </div>
+
+            <div class="consent-group">
+                <label class="consent-checkbox">
+                    <input type="checkbox" name="marketingConsent" required id="marketingConsent">
+                    <span class="custom-checkbox"></span>
+                    <span class="consent-text">I consent to receive appointment reminders and practice updates by text and email via OmniDent AI. My data is secured under HIPAA. Reply STOP to unsubscribe. *</span>
+                </label>
+                <div id="consentError" style="color: #ef4444; font-size: 12px; margin-top: 4px; display: none; padding-left: 36px;">You must consent to continue</div>
+                <div style="font-size: 12px; color: #64748b; margin-top: 8px; padding-left: 36px; line-height: 1.4;">
+                    By continuing, you agree to our <a href="https://www.omnident.ai/terms-and-conditions" target="_blank" style="color: #34d399; text-decoration: underline;">Terms of Service</a> and <a href="https://www.omnident.ai/terms-and-conditions" target="_blank" style="color: #34d399; text-decoration: underline;">Privacy Policy</a>.
+                </div>
+            </div>
+
+            <button type="submit" class="form-submit-btn">
+                Create Account
+            </button>
+        </form>
+
+        <div class="form-loading" id="formLoading" style="display: none;">
+            <div class="loading-spinner"></div>
+            <p>Setting up your account...</p>
+        </div>
+    `;
+
+    console.log('✅ HTML injected, binding form...');
+
+    this.chatForm = document.getElementById('chatForm');
+    this.formLoading = document.getElementById('formLoading');
+    
+    if (this.chatForm) {
+        console.log('✅ Form found, adding submit handler');
+        this.chatForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            console.log('📤 Full form submitted');
+            this.handleFormSubmission();
+        });
+    } else {
+        console.error('❌ Could not find chatForm after injection!');
+    }
+
+    setTimeout(() => {
+        const nameInput = document.getElementById('userName');
+        const emailInput = document.getElementById('userEmail');
+        const phoneInput = document.getElementById('userPhone');
+        
+        this.addSpacebarFixToInput(nameInput);
+        this.addSpacebarFixToInput(emailInput);
+        this.addSpacebarFixToInput(phoneInput);
+        
+        if (nameInput) {
+            nameInput.focus();
+            console.log('✅ Name input focused');
+        }
+    }, 100);
+}
     // ================================
     // SECTION: EXISTING FORM HANDLERS
     // ================================
@@ -1226,12 +1303,38 @@ class ChatWidget {
     // SECTION: CHAT WINDOW CONTROL
     // ================================
 
-    bindEvents() {
-        this.chatButton.addEventListener('click', () => this.toggleChat());
-        this.closeBtn.addEventListener('click', () => this.closeChat());
-        this.sendBtn.addEventListener('click', () => this.sendMessage());
-        this.messagePrompt.addEventListener('click', () => this.openChat());
+  bindEvents() {
+    console.log('🔗 Binding events...');
+    
+    if (!this.chatButton) {
+        console.error('❌ Cannot bind events - chatButton is null');
+        return;
+    }
 
+    // Chat button click
+    this.chatButton.addEventListener('click', () => {
+        console.log('🖱️ Chat button clicked!');
+        this.toggleChat();
+    });
+    console.log('✅ Chat button click handler attached');
+
+    // Close button
+    if (this.closeBtn) {
+        this.closeBtn.addEventListener('click', () => this.closeChat());
+    }
+
+    // Send button
+    if (this.sendBtn) {
+        this.sendBtn.addEventListener('click', () => this.sendMessage());
+    }
+
+    // Message prompt
+    if (this.messagePrompt) {
+        this.messagePrompt.addEventListener('click', () => this.openChat());
+    }
+
+    // Chat input
+    if (this.chatInput) {
         this.chatInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -1259,13 +1362,19 @@ class ChatWidget {
         this.chatInput.addEventListener('input', () => {
             this.updateSendButton();
         });
-
-        document.addEventListener('click', (e) => {
-            if (this.isOpen && !this.chatWindow.contains(e.target) && !this.chatButton.contains(e.target)) {
-                this.closeChat();
-            }
-        });
     }
+
+    // Click outside to close
+    document.addEventListener('click', (e) => {
+        if (this.isOpen && 
+            !this.chatWindow.contains(e.target) && 
+            !this.chatButton.contains(e.target)) {
+            this.closeChat();
+        }
+    });
+    
+    console.log('✅ All event handlers bound');
+}
 
     addSpacebarFixToInput(input) {
         if (input) {
@@ -1304,26 +1413,47 @@ class ChatWidget {
         }
     }
 
-    openChat() {
-        const contactId = localStorage.getItem('ghl_contact_id');
-        const userName = localStorage.getItem('user_name');
-        const sessionActive = sessionStorage.getItem('chat_session_active');
-        const emailVerified = localStorage.getItem('email_verified');
-        const verificationTimestamp = localStorage.getItem('verification_timestamp');
+   openChat() {
+    console.log('📂 openChat() called');
+    
+    const contactId = localStorage.getItem('ghl_contact_id');
+    const userName = localStorage.getItem('user_name');
+    const sessionActive = sessionStorage.getItem('chat_session_active');
+    const emailVerified = localStorage.getItem('email_verified');
+    const verificationTimestamp = localStorage.getItem('verification_timestamp');
 
-        this.isFirstLoad = true;
+    console.log('📊 User State:', {
+        contactId,
+        userName,
+        sessionActive,
+        emailVerified,
+        verificationTimestamp
+    });
 
-        const verificationAge = verificationTimestamp ? Date.now() - parseInt(verificationTimestamp) : Infinity;
-        const maxAge = 12 * 60 * 60 * 1000;
+    this.isFirstLoad = true;
 
-        if (contactId && emailVerified && verificationAge < maxAge && sessionActive) {
-            this.openChatDirectly();
-        } else if (contactId && emailVerified && verificationAge < maxAge && !sessionActive) {
-            this.showQuickVerification(userName);
-        } else {
-            this.showEmailOnlyForm();
-        }
+    const verificationAge = verificationTimestamp ? Date.now() - parseInt(verificationTimestamp) : Infinity;
+    const maxAge = 12 * 60 * 60 * 1000;
+
+    console.log('⏱️ Verification age (ms):', verificationAge);
+    console.log('⏱️ Max age (ms):', maxAge);
+
+    // ✅ SCENARIO 1: Verified & Active Session (Before Timeout)
+    if (contactId && emailVerified && verificationAge < maxAge && sessionActive) {
+        console.log('✅ SCENARIO 1: Opening chat directly');
+        this.openChatDirectly();
+    } 
+    // ✅ SCENARIO 2: Verified but No Active Session (Quick Return)
+    else if (contactId && emailVerified && verificationAge < maxAge && !sessionActive) {
+        console.log('✅ SCENARIO 2: Showing quick verification');
+        this.showQuickVerification(userName);
+    } 
+    // ✅ SCENARIO 3: After Timeout or First Time - Show Email Form
+    else {
+        console.log('✅ SCENARIO 3: Showing email form (new/expired user)');
+        this.showEmailOnlyForm();
     }
+}
 
     async openChatDirectly() {
         this.isOpen = true;
@@ -1401,14 +1531,149 @@ class ChatWidget {
         }, 100);
     }
 
-    showQuickVerification(userName) {
-        this.isOpen = true;
-        this.chatWindow.classList.add('active');
-        this.messagePrompt.classList.add('hidden');
+showFullRegistrationForm(email = '') {
+    console.log('📝 showFullRegistrationForm() called with email:', email);
+    
+    // ✅ Ensure chat window is active (CRITICAL - DON'T SKIP THIS!)
+    this.isOpen = true;
+    this.chatWindow.classList.add('active');
+    this.messagePrompt.classList.add('hidden');
+    
+    if (this.formOverlay) {
         this.formOverlay.classList.remove('hidden');
-
-        this.showQuickVerificationForm(userName);
+        this.formOverlay.style.display = 'flex';
+        console.log('✅ Form overlay shown');
+    } else {
+        console.error('❌ Form overlay not found!');
+        return;
     }
+    
+    const formContainer = this.formOverlay.querySelector('.form-container');
+    if (!formContainer) {
+        console.error('❌ Form container not found!');
+        return;
+    }
+
+    console.log('✅ Form container found, building form...');
+
+    formContainer.innerHTML = `
+        <div class="form-logo-top">
+            <img src="https://cdn.jsdelivr.net/gh/3dsmilesolutions/omnidentai-chat-widget@main/assets/OmniDent%20AI%20Logo.svg" alt="Company Logo" class="logo-image-top">
+        </div>
+
+        <div class="form-header">
+            <h3>Complete Your Profile</h3>
+            <p>Tell us a bit more about yourself</p>
+        </div>
+
+        <form class="chat-form" id="chatForm">
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="userName">Full Name *</label>
+                    <input type="text" id="userName" name="name" required placeholder="Enter your full name">
+                </div>
+                <div class="form-group half-width">
+                    <label for="userEmail">Email Address *</label>
+                    <input type="email" id="userEmail" name="email" required placeholder="Enter your email" value="${email}" ${email ? 'readonly style="background-color: #f3f4f6; cursor: not-allowed;"' : ''}>
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="userPhone">Phone Number *</label>
+                    <input type="tel" id="userPhone" name="phone" required placeholder="Enter your phone number">
+                </div>
+                <div class="form-group half-width">
+                    <label for="userZipCode">Zip Code *</label>
+                    <input type="text" id="userZipCode" name="zipCode" required placeholder="Enter your zip code" maxlength="10">
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="userGender">Identify as... *</label>
+                    <select id="userGender" name="gender" required>
+                        <option value="">Select gender</option>
+                        <option value="male">Male</option>
+                        <option value="female">Female</option>
+                        <option value="non-binary">Non-Binary</option>
+                    </select>
+                </div>
+                <div class="form-group half-width">
+                    <label for="userAge">Age *</label>
+                    <input type="number" id="userAge" name="age" required placeholder="Enter your age" min="1" max="120">
+                </div>
+            </div>
+
+            <div class="consent-group">
+                <label class="consent-checkbox">
+                    <input type="checkbox" name="marketingConsent" required id="marketingConsent">
+                    <span class="custom-checkbox"></span>
+                    <span class="consent-text">I consent to receive appointment reminders and practice updates by text and email via OmniDent AI. My data is secured under HIPAA. Reply STOP to unsubscribe. *</span>
+                </label>
+                <div id="consentError" style="color: #ef4444; font-size: 12px; margin-top: 4px; display: none; padding-left: 36px;">You must consent to continue</div>
+                <div style="font-size: 12px; color: #64748b; margin-top: 8px; padding-left: 36px; line-height: 1.4;">
+                    By continuing, you agree to our <a href="https://www.omnident.ai/terms-and-conditions" target="_blank" style="color: #34d399; text-decoration: underline;">Terms of Service</a> and <a href="https://www.omnident.ai/terms-and-conditions" target="_blank" style="color: #34d399; text-decoration: underline;">Privacy Policy</a>.
+                </div>
+            </div>
+
+            <button type="submit" class="form-submit-btn">
+                Create Account
+            </button>
+        </form>
+
+        <div class="form-loading" id="formLoading" style="display: none;">
+            <div class="loading-spinner"></div>
+            <p>Setting up your account...</p>
+        </div>
+    `;
+
+    console.log('✅ Form HTML injected');
+
+    this.chatForm = document.getElementById('chatForm');
+    this.formLoading = document.getElementById('formLoading');
+    
+    if (this.chatForm) {
+        console.log('✅ Binding submit handler');
+        this.chatForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.handleFormSubmission();
+        });
+    } else {
+        console.error('❌ Could not find form element!');
+    }
+
+    setTimeout(() => {
+        const nameInput = document.getElementById('userName');
+        const emailInput = document.getElementById('userEmail');
+        const phoneInput = document.getElementById('userPhone');
+        
+        this.addSpacebarFixToInput(nameInput);
+        this.addSpacebarFixToInput(emailInput);
+        this.addSpacebarFixToInput(phoneInput);
+        
+        if (nameInput) {
+            nameInput.focus();
+            console.log('✅ Name input focused');
+        }
+    }, 100);
+}
+
+showQuickVerification(userName) {
+    console.log('⚡ showQuickVerification() called');
+    
+    // ✅ Ensure chat window is active
+    this.isOpen = true;
+    this.chatWindow.classList.add('active');
+    this.messagePrompt.classList.add('hidden');
+    
+    if (this.formOverlay) {
+        this.formOverlay.classList.remove('hidden');
+        this.formOverlay.style.display = 'flex';
+    }
+
+    this.showQuickVerificationForm(userName);
+}
 
     showQuickVerificationForm(userName) {
         const formContainer = this.formOverlay.querySelector('.form-container');
@@ -2885,9 +3150,18 @@ class ChatWidget {
 // GLOBAL INITIALIZATION
 // ================================
 
-document.addEventListener('DOMContentLoaded', () => {
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+        console.log('🚀 Initializing Chat Widget...');
+        window.chatWidget = new ChatWidget();
+        console.log('✅ Chat Widget Ready');
+    });
+} else {
+    // DOM already loaded
+    console.log('🚀 Initializing Chat Widget (DOM already loaded)...');
     window.chatWidget = new ChatWidget();
-});
+    console.log('✅ Chat Widget Ready');
+}
 
 // ================================
 // UTILITY FUNCTIONS (for testing)
