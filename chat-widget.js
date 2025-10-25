@@ -153,51 +153,107 @@ class ChatWidget {
     // ================================
 
 async checkEmailExists(email) {
+    console.log('🔍 Checking if email exists:', email);
+    
     if (!this.isSupabaseEnabled) {
-        return { exists: false };
+        console.warn('⚠️ Supabase not initialized yet, waiting...');
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        if (!this.isSupabaseEnabled) {
+            console.error('❌ Supabase failed to initialize');
+            return { exists: false, error: 'Database not available' };
+        }
     }
 
     // Rate limiting
     const lastCheck = sessionStorage.getItem('last_email_check');
+    const lastEmail = sessionStorage.getItem('last_checked_email');
     const now = Date.now();
     
-    if (lastCheck && (now - parseInt(lastCheck)) < 2000) {
-        console.warn('Rate limit: Please wait before checking again');
-        return { exists: false, rateLimited: true };
+    if (lastCheck && lastEmail === email && (now - parseInt(lastCheck)) < 2000) {
+        console.warn('⚠️ Rate limit: Waiting before rechecking same email');
+        await new Promise(resolve => setTimeout(resolve, 2000));
     }
     
     sessionStorage.setItem('last_email_check', now.toString());
+    sessionStorage.setItem('last_checked_email', email);
 
-    try {
-        const { data, error } = await this.supabase
-            .from('user_profiles')
-            .select('contact_id, first_name, last_name, email')
-            .eq('email', email)
-            .maybeSingle(); // ✅ Changed to maybeSingle()
+    // ✅ HIPAA-COMPLIANT: Use secure function instead of direct query
+    const maxRetries = 3;
+    let attempt = 0;
+    
+    while (attempt < maxRetries) {
+        try {
+            console.log(`🔄 Attempt ${attempt + 1}/${maxRetries}`);
+            
+            // ✅ Call the secure function
+            const { data, error } = await this.supabase
+                .rpc('check_email_exists', { check_email: email.trim() });
 
-        if (error) {
-            console.error('Error checking email:', error);
-            return { exists: false };
+            console.log('📦 Function response:', { data, error });
+
+            if (error) {
+                console.error(`❌ Error on attempt ${attempt + 1}:`, error);
+                
+                if (attempt < maxRetries - 1) {
+                    attempt++;
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    continue;
+                }
+                
+                return { exists: false, error: error.message };
+            }
+
+            // data = { exists: true/false, contact_id: 'xxx' or null }
+            if (!data || !data.exists) {
+                console.log('✅ Email NOT in database - new user');
+                return { exists: false };
+            }
+
+            console.log('✅ Email FOUND - existing user');
+            
+            // Now fetch the full name using the contact_id (with proper RLS context)
+            await this.setUserContext(data.contact_id);
+            
+            const { data: userData, error: userError } = await this.supabase
+                .from('user_profiles')
+                .select('first_name, last_name, email')
+                .eq('contact_id', data.contact_id)
+                .single();
+
+            if (userError || !userData) {
+                console.warn('Could not fetch user details');
+                return {
+                    exists: true,
+                    contactId: data.contact_id,
+                    fullName: 'User',
+                    email: email
+                };
+            }
+
+            return { 
+                exists: true, 
+                contactId: data.contact_id,
+                firstName: userData.first_name,
+                lastName: userData.last_name,
+                fullName: `${userData.first_name} ${userData.last_name}`,
+                email: userData.email
+            };
+
+        } catch (error) {
+            console.error(`❌ Exception on attempt ${attempt + 1}:`, error);
+            
+            if (attempt < maxRetries - 1) {
+                attempt++;
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                continue;
+            }
+            
+            return { exists: false, error: error.message };
         }
-
-        if (!data) {
-            console.log('✅ Email not found - new user');
-            return { exists: false };
-        }
-
-        console.log('✅ Email found - existing user:', data.first_name);
-        return { 
-            exists: true, 
-            contactId: data.contact_id,
-            firstName: data.first_name,
-            lastName: data.last_name,
-            fullName: `${data.first_name} ${data.last_name}`,
-            email: data.email
-        };
-    } catch (error) {
-        console.error('Error in checkEmailExists:', error);
-        return { exists: false };
     }
+    
+    return { exists: false, error: 'Max retries exceeded' };
 }
 
     validateEmail(email) {
@@ -350,13 +406,19 @@ showEmailOnlyForm() {
 
             const data = await response.json();
 
-            if (!data.success || !data.verification_sent) {
-                this.showFormError(data.message || 'Failed to send verification code.');
-                this.showEmailOnlyForm();
-                return;
-            }
+           console.log('✅ data.success:', data.success);
+console.log('✅ data.verification_sent:', data.verification_sent);
 
-            this.showVerificationForm(email, name, '');
+if (!data.success || !data.verification_sent) {
+    console.error('❌ FAILED CHECK - Showing email form');
+    this.showFormError(data.message || 'Failed to send verification code.');
+    this.showEmailOnlyForm();
+    return;
+}
+
+console.log('✅ SUCCESS - Calling showVerificationForm()');
+this.showVerificationForm(email, name, '');
+console.log('✅ showVerificationForm() completed');
 
         } catch (error) {
             console.error('Error sending verification code:', error);
@@ -366,6 +428,9 @@ showEmailOnlyForm() {
     }
 
    showFullRegistrationForm(email = '') {
+    console.log('🚨 FULL FORM CALLED - Email:', email);
+    console.trace('📍 Call stack:'); 
+
     console.log('📝 showFullRegistrationForm() called with email:', email);
     
     // ✅ Ensure chat window is active
@@ -767,7 +832,7 @@ showEmailOnlyForm() {
             });
 
             this.socket.on('connect_error', (error) => {
-                console.error('❌ WebSocket connection error:', error);
+                // console.error('❌ WebSocket connection error:', error);
                 this.socketConnected = false;
             });
 
@@ -1189,9 +1254,12 @@ showEmailOnlyForm() {
             this.playSound('send');
         }
 
-        if (this.isSupabaseEnabled && sender === 'bot') {
-            await this.saveMessageToSupabase(content, sender, timestamp);
-        }
+        // if (this.isSupabaseEnabled && sender === 'bot') {
+        //     await this.saveMessageToSupabase(content, sender, timestamp);
+        // }
+if (this.isSupabaseEnabled) {
+    await this.saveMessageToSupabase(content, sender, timestamp);
+}
 
         this.saveChatHistory();
 
@@ -1317,6 +1385,17 @@ showEmailOnlyForm() {
         this.toggleChat();
     });
     console.log('✅ Chat button click handler attached');
+    // Track activity when user focuses input
+    if (this.chatInput) {
+        this.chatInput.addEventListener('focus', () => {
+            this.updateLastActivity();
+        });
+        
+        // Track activity when user types
+        this.chatInput.addEventListener('input', () => {
+            this.updateLastActivity();
+        });
+    }
 
     // Close button
     if (this.closeBtn) {
@@ -1412,50 +1491,72 @@ showEmailOnlyForm() {
             this.openChat();
         }
     }
-
-   openChat() {
+openChat() {
     console.log('📂 openChat() called');
     
     const contactId = localStorage.getItem('ghl_contact_id');
     const userName = localStorage.getItem('user_name');
-    const sessionActive = sessionStorage.getItem('chat_session_active');
     const emailVerified = localStorage.getItem('email_verified');
     const verificationTimestamp = localStorage.getItem('verification_timestamp');
-
+    
+    // ✅ FIX: Check BOTH session keys (defensive programming)
+    const sessionActive1 = sessionStorage.getItem('chat_session_active');
+    const sessionActive2 = sessionStorage.getItem('session_active');
+    const sessionActive = sessionActive1 === 'true' || sessionActive2 === 'true';
+    
+    // ✅ FIX: Check last activity time
+    const lastActivity = sessionStorage.getItem('last_activity');
+    const now = Date.now();
+    const timeSinceActivity = lastActivity ? (now - parseInt(lastActivity)) : Infinity;
+    
     console.log('📊 User State:', {
-        contactId,
+        contactId: contactId ? '✅' : '❌',
         userName,
         sessionActive,
-        emailVerified,
-        verificationTimestamp
+        emailVerified: emailVerified ? '✅' : '❌',
+        timeSinceActivity: timeSinceActivity === Infinity ? 'Never' : `${Math.round(timeSinceActivity / 1000)}s ago`,
+        inactivityDuration: `${this.inactivityDuration / 1000}s`
     });
 
     this.isFirstLoad = true;
 
-    const verificationAge = verificationTimestamp ? Date.now() - parseInt(verificationTimestamp) : Infinity;
-    const maxAge = 12 * 60 * 60 * 1000;
-
-    console.log('⏱️ Verification age (ms):', verificationAge);
-    console.log('⏱️ Max age (ms):', maxAge);
-
-    // ✅ SCENARIO 1: Verified & Active Session (Before Timeout)
-    if (contactId && emailVerified && verificationAge < maxAge && sessionActive) {
-        console.log('✅ SCENARIO 1: Opening chat directly');
+    // ✅ SCENARIO 1: Within timeout (< 2 minutes since last activity)
+    if (contactId && emailVerified && timeSinceActivity < this.inactivityDuration) {
+        console.log('✅ SCENARIO 1: Within timeout - opening chat directly');
+        
+        // Update last activity
+        sessionStorage.setItem('last_activity', now.toString());
+        
         this.openChatDirectly();
-    } 
-    // ✅ SCENARIO 2: Verified but No Active Session (Quick Return)
-    else if (contactId && emailVerified && verificationAge < maxAge && !sessionActive) {
-        console.log('✅ SCENARIO 2: Showing quick verification');
-        this.showQuickVerification(userName);
-    } 
-    // ✅ SCENARIO 3: After Timeout or First Time - Show Email Form
-    else {
-        console.log('✅ SCENARIO 3: Showing email form (new/expired user)');
-        this.showEmailOnlyForm();
+        return;
     }
+    
+    // ✅ SCENARIO 2: After timeout but verified recently (< 12 hours)
+    const verificationAge = verificationTimestamp ? (now - parseInt(verificationTimestamp)) : Infinity;
+    const maxVerificationAge = 12 * 60 * 60 * 1000;  // 12 hours
+    
+    if (contactId && emailVerified && verificationAge < maxVerificationAge) {
+        console.log('✅ SCENARIO 2: After timeout but verified - showing "Yes, that\'s me?"');
+        this.showQuickVerification(userName);
+        return;
+    }
+    
+    // ✅ SCENARIO 3: Never verified or verification expired - Show email form
+    console.log('✅ SCENARIO 3: New user or expired verification - showing email form');
+    this.showEmailOnlyForm();
+}
+// ================================
+// SECTION: ACTIVITY TRACKING
+// ================================
+
+updateLastActivity() {
+    const now = Date.now();
+    sessionStorage.setItem('last_activity', now.toString());
+    console.log('⏱️ Last activity updated:', new Date(now).toLocaleTimeString());
 }
 
     async openChatDirectly() {
+        this.updateLastActivity();
         this.isOpen = true;
         this.chatWindow.classList.add('active');
         this.messagePrompt.classList.add('hidden');
@@ -2599,8 +2700,12 @@ showQuickVerification(userName) {
     }
 
     async openChatAfterForm(userName, isExistingUser = false) {
-        this.formOverlay.classList.add('hidden');
-        sessionStorage.setItem('chat_session_active', 'true');
+    this.formOverlay.classList.add('hidden');
+    
+    // ✅ FIX: Set BOTH session keys AND last_activity
+    sessionStorage.setItem('chat_session_active', 'true');
+    sessionStorage.setItem('session_active', 'true');
+    sessionStorage.setItem('last_activity', Date.now().toString()); 
 
         if (this.formOverlay) {
             this.formOverlay.classList.add('hidden');
@@ -2753,6 +2858,7 @@ showQuickVerification(userName) {
     // ================================
 
     async sendMessage() {
+        this.updateLastActivity();
         const message = this.chatInput.value.trim();
         if (!message || this.isSending) return;
 
